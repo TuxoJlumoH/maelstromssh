@@ -5,8 +5,8 @@
 <h1 align="center">VortexSSH</h1>
 
 <p align="center">
-  A PuTTY-style SSH/SFTP client in Rust — with a CLI, a terminal TUI, and a
-  graphical GUI, all driven by one UI-agnostic engine.
+  An SSH/SFTP client in Rust — with a CLI, a terminal TUI, and a graphical
+  GUI, all driven by one UI-agnostic engine.
 </p>
 
 ## Features
