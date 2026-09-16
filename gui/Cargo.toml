@@ -1,0 +1,15 @@
+[package]
+name = "vortexssh-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vortexssh-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync"] }
+anyhow = "1"
+egui = "0.36"
+eframe = "0.36"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+

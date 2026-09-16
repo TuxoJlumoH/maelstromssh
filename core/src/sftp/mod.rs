@@ -1,0 +1,115 @@
+//! SFTP file transfer, layered on top of an authenticated `ssh::Session`.
+//!
+//! `open` wires up the subsystem channel; `get`/`put` stream files in chunks
+//! (never fully in memory), and `list` flattens a directory into a
+//! front-end-friendly form. One-shot and interactive shells (the CLI `sftp`
+//! command) drive these.
+
+use std::path::Path;
+
+use crate::error::{Error, Result};
+use crate::ssh::Session;
+
+/// Re-exported so front-ends can name the session type without depending on
+/// `russh_sftp` directly.
+pub use russh_sftp::client::SftpSession;
+
+/// A single read buffer for streaming transfers.
+const BUF_SIZE: usize = 64 * 1024;
+
+/// A directory entry in a front-end-friendly shape (no `russh` types).
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+/// Opens an SFTP subsystem channel on an existing session and wraps it in
+/// `russh_sftp`'s client, which provides `read_dir`, `open`, `metadata`, etc.
+pub async fn open(session: &mut Session) -> Result<SftpSession> {
+    let channel = session.open_subsystem("sftp").await?;
+    SftpSession::new(channel.into_stream())
+        .await
+        .map_err(Error::Sftp)
+}
+
+/// Downloads `remote` to `local` in chunks, returning the number of bytes
+/// transferred. Overwrites `local` if it exists.
+pub async fn get(sftp: &SftpSession, remote: &str, local: &Path) -> Result<u64> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut src = sftp.open(remote).await.map_err(Error::Sftp)?;
+    let mut dst = tokio::fs::File::create(local).await?;
+
+    let mut buf = vec![0u8; BUF_SIZE];
+    let mut total = 0u64;
+    loop {
+        let n = src.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        dst.write_all(&buf[..n]).await?;
+        total += n as u64;
+    }
+    dst.flush().await?;
+    Ok(total)
+}
+
+/// Uploads `local` to `remote` in chunks, returning the number of bytes
+/// transferred. Creates or truncates `remote`.
+pub async fn put(sftp: &SftpSession, local: &Path, remote: &str) -> Result<u64> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut src = tokio::fs::File::open(local).await?;
+    let mut dst = sftp.create(remote).await.map_err(Error::Sftp)?;
+
+    let mut buf = vec![0u8; BUF_SIZE];
+    let mut total = 0u64;
+    loop {
+        let n = src.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        dst.write_all(&buf[..n]).await?;
+        total += n as u64;
+    }
+    dst.flush().await?;
+    Ok(total)
+}
+
+/// Lists a remote directory, sorted by name. Each entry carries whether it is
+/// a directory and its size in bytes.
+pub async fn list(sftp: &SftpSession, path: &str) -> Result<Vec<DirEntry>> {
+    let mut entries = Vec::new();
+    for entry in sftp.read_dir(path).await.map_err(Error::Sftp)? {
+        let meta = entry.metadata();
+        entries.push(DirEntry {
+            name: entry.file_name(),
+            is_dir: meta.file_type().is_dir(),
+            size: meta.size.unwrap_or(0),
+        });
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(entries)
+}
+
+/// Resolves `path` to an absolute remote path (handles `.`/`..`/symlinks).
+pub async fn canonicalize(sftp: &SftpSession, path: &str) -> Result<String> {
+    sftp.canonicalize(path).await.map_err(Error::Sftp)
+}
+
+pub async fn remove_file(sftp: &SftpSession, path: &str) -> Result<()> {
+    sftp.remove_file(path).await.map_err(Error::Sftp)
+}
+
+pub async fn remove_dir(sftp: &SftpSession, path: &str) -> Result<()> {
+    sftp.remove_dir(path).await.map_err(Error::Sftp)
+}
+
+pub async fn create_dir(sftp: &SftpSession, path: &str) -> Result<()> {
+    sftp.create_dir(path).await.map_err(Error::Sftp)
+}
+
+pub async fn rename(sftp: &SftpSession, from: &str, to: &str) -> Result<()> {
+    sftp.rename(from, to).await.map_err(Error::Sftp)
+}

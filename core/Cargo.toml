@@ -1,0 +1,25 @@
+[package]
+name = "vortexssh-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+russh = "0.63"
+russh-sftp = "3"
+vte = "0.15"
+unicode-width = "0.2"
+# Pinned to the exact version russh 0.63 vendors, purely to turn on the
+# `rand_core` (key generation) and `rsa` (RSA key generation) features via
+# Cargo feature unification — not an independent dependency on a different
+# ssh-key version.
+ssh-key = { version = "=0.7.0-rc.11", features = ["rand_core", "getrandom", "rsa"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "fs"] }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+dirs = "7"
+
+[dev-dependencies]
+tokio-test = "0.4"
+anyhow = "1"
