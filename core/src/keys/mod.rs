@@ -1,5 +1,4 @@
-//! Key generation, import/export, and ssh-agent support. `.ppk`
-//! interop lands in a later phase.
+//! Key generation, import/export, and ssh-agent support.
 //!
 //! Re-uses `russh::keys` (which re-exports `ssh_key`) rather than depending
 //! on `ssh-key` directly, to avoid pulling in two potentially mismatched
@@ -19,7 +18,7 @@ use crate::error::Result;
 #[derive(Debug, Clone, Copy)]
 pub enum KeyKind {
     Ed25519,
-    /// RSA key generation; `bits` is the modulus size (min 1024).
+    /// RSA key generation; `bits` is the modulus size (min 2048).
     Rsa {
         bits: usize,
     },
@@ -33,9 +32,9 @@ pub fn generate(kind: KeyKind, comment: &str) -> Result<PrivateKey> {
     let mut key = match kind {
         KeyKind::Ed25519 => PrivateKey::random(&mut rng, Algorithm::Ed25519)?,
         KeyKind::Rsa { bits } => {
-            if bits < 1024 {
+            if bits < 2048 {
                 return Err(crate::error::Error::Other(format!(
-                    "RSA key size must be at least 1024 bits (got {bits})"
+                    "RSA key size must be at least 2048 bits (got {bits})"
                 )));
             }
             let keypair = RsaKeypair::random(&mut rng, bits)?;
@@ -78,7 +77,7 @@ mod tests {
 
     #[test]
     fn generate_rsa_and_roundtrip_to_disk() {
-        let key = generate(KeyKind::Rsa { bits: 1024 }, "test@vortexssh").unwrap();
+        let key = generate(KeyKind::Rsa { bits: 2048 }, "test@vortexssh").unwrap();
         assert!(key.algorithm().is_rsa());
         let path = std::env::temp_dir().join(format!("vortexssh-test-rsa-{}", std::process::id()));
         save_openssh(&key, &path).unwrap();

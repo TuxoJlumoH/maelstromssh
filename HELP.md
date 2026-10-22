@@ -249,7 +249,7 @@ The engine every front-end uses. No UI/rendering code lives here.
 - `generate(KeyKind, comment) -> PrivateKey`
 - `load_openssh(path, passphrase) -> PrivateKey`
 - `save_openssh(&PrivateKey, path)`
-- `KeyKind::{ Ed25519, Rsa{bits} }` (RSA min 1024 bits)
+- `KeyKind::{ Ed25519, Rsa{bits} }` (RSA min 2048 bits)
 - `HashAlg::{ Sha256, ... }` (re-exported)
 - `keys::agent` — `connect_env()`, `list_identities(agent)` for `ssh-agent` (`$SSH_AUTH_SOCK`)
 

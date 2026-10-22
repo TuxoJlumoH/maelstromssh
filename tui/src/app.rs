@@ -67,13 +67,9 @@ async fn event_loop(
         tokio::select! {
             _ = redraw.tick() => {
                 let gen = term.generation();
-                if gen != last_gen || !connected {
+                if gen != last_gen {
                     last_gen = gen;
                     draw_frame(terminal, term, endpoint, connected)?;
-                }
-                if !connected {
-                    // Let the final frame render, then exit.
-                    break;
                 }
             }
             ev = events.next() => {
@@ -133,16 +129,18 @@ async fn event_loop(
         }
 
         if quit || !connected {
-            if !connected && quit {
-                // Already exited above; nothing extra.
-            }
             break;
         }
     }
 
     if !connected {
-        // One last draw so the "closed" state is visible before teardown.
-        let _ = draw_frame(terminal, term, endpoint, false);
+        // Keep the final screen up until the user has seen it.
+        draw_frame(terminal, term, endpoint, false)?;
+        while let Some(ev) = events.next().await {
+            if matches!(ev, Ok(Event::Key(k)) if k.kind == KeyEventKind::Press) {
+                break;
+            }
+        }
     }
     Ok(())
 }
