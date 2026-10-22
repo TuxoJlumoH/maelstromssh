@@ -51,6 +51,7 @@ vortexssh profile add mybox user@host -p 2222
 
 ```bash
 vortexssh-tui user@host
+vortexssh-gui                     # connect form
 vortexssh-gui user@host
 ```
 

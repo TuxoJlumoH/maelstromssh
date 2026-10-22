@@ -81,6 +81,16 @@ impl SshConfig {
         Ok(config)
     }
 
+    /// Reads only `~/.ssh/config` (e.g. to list the user's own aliases).
+    pub fn load_user() -> Result<Self> {
+        let mut config = Self::default();
+        if let Some(home) = dirs::home_dir() {
+            let ssh_dir = home.join(".ssh");
+            config.append_file(&ssh_dir.join("config"), &ssh_dir)?;
+        }
+        Ok(config)
+    }
+
     /// Parses one file. Relative `Include` paths resolve against `base`.
     pub fn from_file(path: &Path, base: &Path) -> Result<Self> {
         let mut config = Self::default();

@@ -1,5 +1,5 @@
-//! The egui application: owns the core [`Terminal`], answers the connect
-//! task's questions (password, passphrase, host key, 2FA) in dialogs, and
+//! The egui application: shows a connect form when started without a
+//! target, owns the core [`Terminal`], answers the connect task's questions (password, passphrase, host key, 2FA) in dialogs, and
 //! paints the grid + status bar. The SSH session lives on a background tokio
 //! task (see [`crate::ssh`]); this module is purely single-threaded.
 
@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Stroke};
 use tokio::sync::mpsc;
+use vortexssh_core::config::{ProfileStore, SshConfig};
 use vortexssh_core::prompt::KiPrompt;
-use vortexssh_core::target::Target;
+use vortexssh_core::target::{AuthChoice, Target, TargetArgs};
 use vortexssh_core::term::Terminal;
 
 use crate::keys::{self, KeyOut};
@@ -18,6 +19,8 @@ use crate::ssh::{self, Cmd, Evt, Question};
 const ERROR_RED: Color32 = Color32::from_rgb(240, 80, 80);
 
 enum State {
+    /// The connect form, shown when no target was given (or to change it).
+    Setup(Box<ConnectForm>),
     Connecting,
     Secret {
         prompt: String,
@@ -81,11 +84,116 @@ enum Outcome {
     Pending,
     Answered,
     Retry,
+    /// Back to the connect form.
+    Edit,
     Quit,
 }
 
+/// The connect form's fields, plus the choices offered next to them.
+#[derive(Default)]
+struct ConnectForm {
+    target: String,
+    profile: Option<String>,
+    port: String,
+    identity: String,
+    /// `None`: auto, or whatever the profile says.
+    auth: Option<AuthChoice>,
+    error: Option<String>,
+    profiles: Vec<String>,
+    aliases: Vec<String>,
+}
+
+impl ConnectForm {
+    fn new() -> Self {
+        let mut form = Self::default();
+        match ProfileStore::default_location().and_then(|s| s.list()) {
+            Ok(profiles) => form.profiles = profiles,
+            Err(e) => form.error = Some(format!("cannot list profiles: {e}")),
+        }
+        match SshConfig::load_user() {
+            Ok(config) => form.aliases = config.host_aliases(),
+            Err(e) => form.error = Some(e.to_string()),
+        }
+        form
+    }
+
+    fn from_args(args: &TargetArgs) -> Self {
+        let mut form = Self::new();
+        form.target = args.target.clone().unwrap_or_default();
+        form.profile = args.profile.clone().filter(|p| form.profiles.contains(p));
+        form.port = args.port.map(|p| p.to_string()).unwrap_or_default();
+        form.identity = args
+            .identity
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        form.auth = args.auth;
+        form
+    }
+
+    /// Prefills the form from the target that was just tried.
+    fn from_target(target: &Target, profile: Option<String>) -> Self {
+        let mut form = Self::new();
+        if profile.is_some() {
+            form.profile = profile;
+        } else {
+            form.target = format!("{}@{}", target.user, target.host);
+            if target.port != 22 {
+                form.port = target.port.to_string();
+            }
+        }
+        form
+    }
+
+    fn args(&self) -> Result<TargetArgs, String> {
+        let port = match self.port.trim() {
+            "" => None,
+            p => Some(
+                p.parse::<u16>()
+                    .ok()
+                    .filter(|&p| p != 0)
+                    .ok_or_else(|| format!("'{p}' is not a valid port"))?,
+            ),
+        };
+        let target = self.target.trim();
+        if self.profile.is_none() && target.is_empty() {
+            return Err("enter user@host, a host, or an ssh_config alias".into());
+        }
+        let identity = self.identity.trim();
+        Ok(TargetArgs {
+            target: self.profile.is_none().then(|| target.to_string()),
+            port,
+            identity: (!identity.is_empty()).then(|| identity.into()),
+            profile: self.profile.clone(),
+            auth: self.auth,
+        })
+    }
+}
+
+const AUTH_CHOICES: [(AuthChoice, &str); 5] = [
+    (AuthChoice::Auto, "auto"),
+    (AuthChoice::Password, "password"),
+    (AuthChoice::Key, "key file only"),
+    (AuthChoice::Agent, "ssh-agent only"),
+    (AuthChoice::KeyboardInteractive, "keyboard-interactive"),
+];
+
+fn auth_label(choice: Option<AuthChoice>, profile: bool) -> &'static str {
+    match choice {
+        None if profile => "from profile",
+        None => "auto (agent, keys, password)",
+        Some(c) => AUTH_CHOICES
+            .iter()
+            .find(|(v, _)| *v == c)
+            .map_or("?", |(_, l)| l),
+    }
+}
+
 pub struct GuiApp {
-    target: Target,
+    /// `None` until the connect form has been filled in.
+    target: Option<Target>,
+    /// The profile the target came from, to prefill the form again.
+    profile: Option<String>,
     term_type: String,
     handle: tokio::runtime::Handle,
     cmd_tx: Option<mpsc::UnboundedSender<Cmd>>,
@@ -110,14 +218,31 @@ pub struct GuiApp {
 }
 
 impl GuiApp {
-    pub fn new(target: Target, term_type: String, handle: tokio::runtime::Handle) -> Self {
+    /// Connects straight away when `args` name a target or profile;
+    /// otherwise (or if they don't resolve) starts on the connect form,
+    /// prefilled from `args`.
+    pub fn new(args: TargetArgs, term_type: String, handle: tokio::runtime::Handle) -> Self {
+        let profile = args.profile.clone();
+        let (target, state) = if args.target.is_some() || profile.is_some() {
+            match args.clone().resolve() {
+                Ok(target) => (Some(target), State::Connecting),
+                Err(e) => {
+                    let mut form = ConnectForm::from_args(&args);
+                    form.error = Some(e.to_string());
+                    (None, State::Setup(Box::new(form)))
+                }
+            }
+        } else {
+            (None, State::Setup(Box::new(ConnectForm::from_args(&args))))
+        };
         Self {
             target,
+            profile,
             term_type,
             handle,
             cmd_tx: None,
             evt_rx: None,
-            state: State::Connecting,
+            state,
             term: Terminal::new(80, 24),
             cols: 80,
             rows: 24,
@@ -135,10 +260,13 @@ impl GuiApp {
 
     /// Spawns a fresh connect task with its own channels.
     fn start_connect(&mut self, ctx: &egui::Context) {
+        let Some(target) = self.target.clone() else {
+            return;
+        };
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (evt_tx, evt_rx) = mpsc::unbounded_channel();
         self.handle.spawn(ssh::connect_and_run(
-            self.target.clone(),
+            target,
             self.term_type.clone(),
             cmd_rx,
             evt_tx,
@@ -153,7 +281,7 @@ impl GuiApp {
 
 impl eframe::App for GuiApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.evt_rx.is_none() {
+        if self.evt_rx.is_none() && !matches!(self.state, State::Setup(_)) {
             self.start_connect(ctx);
         }
 
@@ -185,7 +313,15 @@ impl eframe::App for GuiApp {
         if matches!(self.state, State::Running) {
             self.ui_running(ui);
         } else {
-            self.ui_dialog(ui);
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::same(16))
+                .show(ui, |ui| {
+                    if matches!(self.state, State::Setup(_)) {
+                        self.ui_setup(ui);
+                    } else {
+                        self.ui_dialog(ui);
+                    }
+                });
         }
 
         if self.quit {
@@ -195,15 +331,138 @@ impl eframe::App for GuiApp {
 }
 
 impl GuiApp {
+    fn ui_setup(&mut self, ui: &mut egui::Ui) {
+        let State::Setup(form) = &mut self.state else {
+            return;
+        };
+        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let mut submit = false;
+        let mut quit = false;
+
+        ui.heading("VortexSSH");
+        ui.label("New connection");
+        ui.add_space(8.0);
+
+        egui::Grid::new("connect_form")
+            .num_columns(2)
+            .spacing([12.0, 8.0])
+            .show(ui, |ui| {
+                if !form.profiles.is_empty() {
+                    ui.label("Profile");
+                    egui::ComboBox::from_id_salt("profile")
+                        .selected_text(form.profile.as_deref().unwrap_or("(none)"))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut form.profile, None, "(none)");
+                            for name in &form.profiles {
+                                ui.selectable_value(
+                                    &mut form.profile,
+                                    Some(name.clone()),
+                                    name.as_str(),
+                                );
+                            }
+                        });
+                    ui.end_row();
+                }
+
+                ui.label("Host");
+                let host = ui.add_enabled(
+                    form.profile.is_none(),
+                    egui::TextEdit::singleline(&mut form.target)
+                        .hint_text("user@host or ssh_config alias")
+                        .desired_width(280.0),
+                );
+                if form.profile.is_none() && !ui.memory(|m| m.focused().is_some()) {
+                    host.request_focus();
+                }
+                ui.end_row();
+
+                ui.label("Port");
+                ui.add(
+                    egui::TextEdit::singleline(&mut form.port)
+                        .hint_text("22")
+                        .desired_width(80.0),
+                );
+                ui.end_row();
+
+                ui.label("Key file");
+                ui.add(
+                    egui::TextEdit::singleline(&mut form.identity)
+                        .hint_text("optional, e.g. ~/.ssh/id_ed25519")
+                        .desired_width(280.0),
+                );
+                ui.end_row();
+
+                ui.label("Authentication");
+                let is_profile = form.profile.is_some();
+                egui::ComboBox::from_id_salt("auth")
+                    .selected_text(auth_label(form.auth, is_profile))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut form.auth, None, auth_label(None, is_profile));
+                        for (choice, label) in AUTH_CHOICES.iter().skip(1) {
+                            ui.selectable_value(&mut form.auth, Some(*choice), *label);
+                        }
+                    });
+                ui.end_row();
+            });
+
+        if form.profile.is_none() && !form.aliases.is_empty() {
+            ui.add_space(8.0);
+            ui.label("Hosts from ~/.ssh/config:");
+            ui.horizontal_wrapped(|ui| {
+                for alias in &form.aliases {
+                    if ui.small_button(alias.as_str()).clicked() {
+                        form.target = alias.clone();
+                    }
+                }
+            });
+        }
+
+        if let Some(err) = &form.error {
+            ui.add_space(8.0);
+            ui.colored_label(ERROR_RED, err.as_str());
+        }
+
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            submit |= ui.button("Connect").clicked() || enter;
+            quit |= ui.button("Quit").clicked();
+        });
+
+        if quit {
+            self.quit = true;
+        } else if submit {
+            let resolved = form
+                .args()
+                .and_then(|args| args.resolve().map_err(|e| e.to_string()));
+            match resolved {
+                Ok(target) => {
+                    for warning in &target.warnings {
+                        tracing::warn!("{warning}");
+                    }
+                    self.profile = form.profile.clone();
+                    self.target = Some(target);
+                    self.start_connect(ui.ctx());
+                }
+                Err(e) => form.error = Some(e),
+            }
+        }
+    }
+
     /// Renders whichever pre-session screen the state calls for. The state is
     /// taken out for the frame and put back unless the dialog was answered.
     fn ui_dialog(&mut self, ui: &mut egui::Ui) {
         let mut state = std::mem::replace(&mut self.state, State::Connecting);
-        let label = self.target.label();
+        let label = self.target.as_ref().map(Target::label).unwrap_or_default();
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
 
         ui.heading("VortexSSH");
         ui.label(format!("Connecting to {label}"));
+        for warning in self.target.iter().flat_map(|t| &t.warnings) {
+            ui.colored_label(
+                Color32::from_rgb(230, 180, 60),
+                format!("warning: {warning}"),
+            );
+        }
         ui.add_space(8.0);
 
         let outcome = match &mut state {
@@ -274,13 +533,16 @@ impl GuiApp {
                     if ui.button("Retry").clicked() {
                         out = Outcome::Retry;
                     }
+                    if ui.button("Change…").clicked() {
+                        out = Outcome::Edit;
+                    }
                     if ui.button("Quit").clicked() {
                         out = Outcome::Quit;
                     }
                 });
                 out
             }
-            State::Running => Outcome::Pending,
+            State::Running | State::Setup(_) => Outcome::Pending,
         };
 
         match outcome {
@@ -296,6 +558,15 @@ impl GuiApp {
                 }
             }
             Outcome::Retry => self.start_connect(ui.ctx()),
+            Outcome::Edit => {
+                let form = match &self.target {
+                    Some(t) => ConnectForm::from_target(t, self.profile.clone()),
+                    None => ConnectForm::new(),
+                };
+                self.cmd_tx = None;
+                self.evt_rx = None;
+                self.state = State::Setup(Box::new(form));
+            }
         }
     }
 
@@ -540,7 +811,8 @@ impl GuiApp {
             .term
             .title()
             .map(str::to_string)
-            .unwrap_or_else(|| self.target.label());
+            .or_else(|| self.target.as_ref().map(Target::label))
+            .unwrap_or_default();
         let status = if self.term.viewport_offset() > 0 {
             format!("{label}    ↑ {} lines", self.term.viewport_offset())
         } else {
@@ -588,6 +860,6 @@ fn answer(state: State, accept: bool) {
         State::KeyboardInteractive { answers, reply, .. } => {
             let _ = reply.send(accept.then_some(answers));
         }
-        State::Connecting | State::Running | State::Failed(_) => {}
+        State::Setup(_) | State::Connecting | State::Running | State::Failed(_) => {}
     }
 }

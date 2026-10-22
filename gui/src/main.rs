@@ -32,10 +32,9 @@ fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let target = Cli::parse().target.resolve()?;
-    for warning in &target.warnings {
-        eprintln!("warning: {warning}");
-    }
+    // Without a target or profile the window opens on a connect form, as
+    // it does when the arguments don't resolve (errors are shown there).
+    let args = Cli::parse().target;
     let term_type = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -61,7 +60,7 @@ fn main() -> Result<()> {
     let result = eframe::run_native(
         "VortexSSH",
         options,
-        Box::new(move |_cc| Ok(Box::new(GuiApp::new(target, term_type, handle)))),
+        Box::new(move |_cc| Ok(Box::new(GuiApp::new(args, term_type, handle)))),
     );
 
     // The window closed; give the background connect/shell task a moment to

@@ -42,8 +42,14 @@ impl ProfileStore {
 
     pub fn load(&self, name: &str) -> Result<Profile> {
         let path = self.profile_path(name);
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| Error::Config(format!("reading {}: {e}", path.display())))?;
+        let text = std::fs::read_to_string(&path).map_err(|e| {
+            Error::Config(match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    format!("no profile named '{name}' (see `vortexssh profile list`)")
+                }
+                _ => format!("reading {}: {e}", path.display()),
+            })
+        })?;
         toml::from_str(&text).map_err(|e| Error::Config(format!("parsing {}: {e}", path.display())))
     }
 

@@ -222,10 +222,18 @@ vortexssh-gui [TARGET] [OPTIONS]
 ```
 
 ```bash
+vortexssh-gui                      # opens the connect form
 vortexssh-gui user@example.com
 vortexssh-gui -i ~/.ssh/id_ed25519 git@github.com
 vortexssh-gui --profile mybox
 ```
+
+Without a `TARGET` or `--profile`, the window opens on a **connect form**. It has
+host (`user@host` or an ssh_config alias), port, an optional key file, the auth
+method, a saved-profile picker, and buttons for the `Host` aliases in
+`~/.ssh/config`. If the arguments don't resolve (e.g. an unknown profile),
+the form opens with the error shown. When a connection fails, **Change…**
+returns to the form, prefilled.
 
 In-window controls:
 
