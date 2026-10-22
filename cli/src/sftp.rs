@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Subcommand;
+use vortexssh_core::paths::expand_tilde;
 use vortexssh_core::sftp::{self, DirEntry, SftpSession};
 use vortexssh_core::ssh::Session;
 
@@ -145,7 +146,7 @@ pub async fn shell(session: &mut Session) -> Result<()> {
                 }
                 let target = resolve_remote(&cwd, &remote);
                 let local = local
-                    .map(PathBuf::from)
+                    .map(expand_tilde)
                     .unwrap_or_else(|| PathBuf::from(remote_basename(&remote)));
                 if let Err(e) = do_get(&sftp, &target, &local).await {
                     eprintln!("get: {e}");
@@ -156,7 +157,7 @@ pub async fn shell(session: &mut Session) -> Result<()> {
                     eprintln!("usage: put <local> [remote]");
                     continue;
                 }
-                let local = PathBuf::from(&local);
+                let local = expand_tilde(&local);
                 let target = remote
                     .map(|r| resolve_remote(&cwd, &r))
                     .unwrap_or_else(|| resolve_remote(&cwd, &local_basename(&local)));
@@ -217,7 +218,7 @@ pub async fn shell(session: &mut Session) -> Result<()> {
                     eprintln!("usage: lcd <path>");
                     continue;
                 }
-                if let Err(e) = std::env::set_current_dir(&path) {
+                if let Err(e) = std::env::set_current_dir(expand_tilde(&path)) {
                     eprintln!("lcd {path}: {e}");
                 }
             }
@@ -232,9 +233,9 @@ pub async fn shell(session: &mut Session) -> Result<()> {
 }
 
 fn list_local(path: Option<&str>) -> std::io::Result<()> {
-    let dir = path.unwrap_or(".");
+    let dir = expand_tilde(path.unwrap_or("."));
     let mut entries: Vec<(String, bool, u64)> = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
+    for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
         let meta = entry.metadata()?;
         entries.push((

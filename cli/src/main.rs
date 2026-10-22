@@ -199,7 +199,7 @@ async fn connect_session(target: &Target) -> Result<Session> {
         Arc::new(KnownHosts { prompter }),
     )
     .await
-    .with_context(|| format!("connecting to {}", target.label()))
+    .map_err(Into::into)
 }
 
 async fn connect(target: Target) -> Result<()> {

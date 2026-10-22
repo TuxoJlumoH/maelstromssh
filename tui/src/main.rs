@@ -42,8 +42,7 @@ async fn main() -> Result<()> {
         prompter.clone(),
         Arc::new(KnownHosts { prompter }),
     )
-    .await
-    .with_context(|| format!("connecting to {}", target.label()))?;
+    .await?;
 
     // Shell size: the status bar takes one row from the top-level screen.
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));

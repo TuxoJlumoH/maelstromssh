@@ -4,26 +4,29 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("SSH error: {0}")]
+    #[error(transparent)]
     Ssh(#[from] russh::Error),
 
-    #[error("SFTP error: {0}")]
+    #[error(transparent)]
     Sftp(#[from] russh_sftp::client::error::Error),
 
-    #[error("key error: {0}")]
+    #[error(transparent)]
     Key(#[from] russh::keys::ssh_key::Error),
 
-    #[error("key error: {0}")]
+    #[error(transparent)]
     RusshKey(#[from] russh::keys::Error),
 
-    #[error("ssh-agent error: {0}")]
+    #[error(transparent)]
     AgentAuth(#[from] russh::AgentAuthError),
 
-    #[error("io error: {0}")]
+    #[error(transparent)]
     Io(#[from] std::io::Error),
 
-    #[error("config error: {0}")]
+    #[error("{0}")]
     Config(String),
+
+    #[error("cannot connect to {addr}: {reason}")]
+    Connect { addr: String, reason: String },
 
     #[error("host key verification failed for {host}: {reason}")]
     HostKeyVerification { host: String, reason: String },
@@ -31,8 +34,8 @@ pub enum Error {
     #[error("host key for {host} was not accepted")]
     HostKeyRejected { host: String },
 
-    #[error("authentication failed for user {user}")]
-    AuthFailed { user: String },
+    #[error("authentication failed for {user}@{host}")]
+    AuthFailed { user: String, host: String },
 
     #[error("cancelled")]
     Cancelled,

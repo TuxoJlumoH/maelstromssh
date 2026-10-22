@@ -9,6 +9,8 @@ use tokio::sync::mpsc;
 use crate::error::{Error, Result};
 use crate::prompt::Prompter;
 
+use super::session::host_label;
+
 /// Pluggable host key verification, checked once per connection before any
 /// authentication happens.
 pub trait HostKeyVerifier: Send + Sync {
@@ -40,7 +42,7 @@ impl HostKeyVerifier for KnownHosts {
     fn verify(&self, host: &str, port: u16, key: &PublicKeyOrCertificate) -> Result<bool> {
         let PublicKeyOrCertificate::PublicKey { key: pubkey, .. } = key else {
             return Err(Error::HostKeyVerification {
-                host: host.to_string(),
+                host: host_label(host, port),
                 reason: "the server presented a host certificate, which is not supported".into(),
             });
         };
@@ -57,8 +59,17 @@ impl HostKeyVerifier for KnownHosts {
                     Ok(false)
                 }
             }
+            Err(russh::keys::Error::KeyChanged { line }) => Err(Error::HostKeyVerification {
+                host: host_label(host, port),
+                reason: format!(
+                    "the host key has CHANGED since it was saved in known_hosts (line {line}).\n\
+                     Someone could be intercepting the connection, or the server was reinstalled.\n\
+                     If you trust the new key, remove the old one with: ssh-keygen -R '{}'",
+                    host_label(host, port)
+                ),
+            }),
             Err(e) => Err(Error::HostKeyVerification {
-                host: host.to_string(),
+                host: host_label(host, port),
                 reason: e.to_string(),
             }),
         }
@@ -104,7 +115,7 @@ impl russh::client::Handler for ClientHandler {
         match outcome {
             Ok(ok) => Ok(ok),
             Err(e) => {
-                tracing::error!("{e}");
+                tracing::debug!("host key check failed: {e}");
                 *self.rejection.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
                 Ok(false)
             }

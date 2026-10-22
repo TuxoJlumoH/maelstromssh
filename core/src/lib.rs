@@ -5,6 +5,7 @@
 pub mod config;
 pub mod error;
 pub mod keys;
+pub mod paths;
 pub mod prompt;
 pub mod sftp;
 pub mod ssh;

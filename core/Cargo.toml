@@ -13,7 +13,7 @@ unicode-width = "0.2"
 # Cargo feature unification — not an independent dependency on a different
 # ssh-key version.
 ssh-key = { version = "=0.7.0-rc.11", features = ["rand_core", "getrandom", "rsa"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "fs", "time"] }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

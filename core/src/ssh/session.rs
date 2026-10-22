@@ -1,14 +1,18 @@
+use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use russh::client::{self, Handle, KeyboardInteractiveAuthResponse, Msg};
 use russh::keys::{PrivateKey, PrivateKeyWithHashAlg};
 use russh::Channel;
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 use crate::config::AuthMethod;
 use crate::error::{Error, Result};
 use crate::keys;
+use crate::paths::expand_tilde;
 use crate::prompt::{KiPrompt, Prompter};
 
 use super::client::{ClientHandler, HostKeyVerifier, ServerEvent};
@@ -87,14 +91,15 @@ impl Session {
             rejection: rejection.clone(),
         };
 
-        let mut handle = match client::connect(config, (host, port), handler).await {
+        let socket = connect_tcp(host, port).await?;
+        let mut handle = match client::connect_stream(config, socket, handler).await {
             Ok(h) => h,
             Err(e) => {
                 let reason = rejection.lock().unwrap_or_else(|p| p.into_inner()).take();
                 return Err(match (reason, e) {
                     (Some(reason), _) => reason,
                     (None, russh::Error::UnknownKey) => Error::HostKeyRejected {
-                        host: host.to_string(),
+                        host: host_label(host, port),
                     },
                     (None, e) => Error::Ssh(e),
                 });
@@ -106,7 +111,7 @@ impl Session {
                 authenticate_password(&mut handle, user, host, &prompter).await?
             }
             AuthMethod::PublicKey { key_path } => {
-                let key = load_key(Path::new(key_path), &prompter).await?;
+                let key = load_key(&expand_tilde(key_path), &prompter).await?;
                 authenticate_key(&mut handle, user, key).await?
             }
             AuthMethod::Agent => authenticate_agent(&mut handle, user).await?,
@@ -118,6 +123,7 @@ impl Session {
         if !authenticated {
             return Err(Error::AuthFailed {
                 user: user.to_string(),
+                host: host_label(host, port),
             });
         }
 
@@ -196,6 +202,56 @@ impl Session {
     }
 }
 
+/// How long to wait for the TCP connection before giving up.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Opens the TCP connection, turning the usual failures into messages that
+/// say what went wrong.
+async fn connect_tcp(host: &str, port: u16) -> Result<TcpStream> {
+    let addr = host_label(host, port);
+    let fail = |reason: String| Error::Connect {
+        addr: addr.clone(),
+        reason,
+    };
+    let socket = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((host, port))).await
+    {
+        Err(_) => {
+            return Err(fail(format!(
+                "no response after {}s",
+                CONNECT_TIMEOUT.as_secs()
+            )))
+        }
+        Ok(Err(e)) => {
+            let reason = match e.kind() {
+                ErrorKind::ConnectionRefused => {
+                    "connection refused (is sshd running on that port?)".to_string()
+                }
+                ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable => {
+                    "host is unreachable".to_string()
+                }
+                ErrorKind::TimedOut => "connection timed out".to_string(),
+                _ if e.to_string().contains("lookup address") => {
+                    format!("unknown host '{host}'")
+                }
+                _ => e.to_string(),
+            };
+            return Err(fail(reason));
+        }
+        Ok(Ok(s)) => s,
+    };
+    socket.set_nodelay(true).ok();
+    Ok(socket)
+}
+
+/// `host`, or `[host]:port` for non-standard ports (as OpenSSH writes it).
+pub(crate) fn host_label(host: &str, port: u16) -> String {
+    if port == 22 {
+        host.to_string()
+    } else {
+        format!("[{host}]:{port}")
+    }
+}
+
 /// Runs a (possibly blocking) prompt without stalling the async executor.
 async fn ask<T, F>(prompter: &Arc<dyn Prompter>, f: F) -> Result<T>
 where
@@ -235,8 +291,15 @@ async fn authenticate_password(
 async fn load_key(path: &Path, prompter: &Arc<dyn Prompter>) -> Result<PrivateKey> {
     match keys::load_openssh(path, None) {
         Err(Error::RusshKey(russh::keys::Error::KeyIsEncrypted)) => {}
+        Err(Error::RusshKey(russh::keys::Error::IO(e))) if e.kind() == ErrorKind::NotFound => {
+            return Err(Error::Config(format!(
+                "key file {} not found",
+                path.display()
+            )))
+        }
         other => {
-            return other.map_err(|e| Error::Config(format!("loading key {}: {e}", path.display())))
+            return other
+                .map_err(|e| Error::Config(format!("cannot load key {}: {e}", path.display())))
         }
     }
     let label = format!("Passphrase for {}: ", path.display());
