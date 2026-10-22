@@ -4,11 +4,12 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use russh::keys::PublicKey;
 use russh::server::{self, Auth, Response};
 use russh::MethodKind;
 use tokio::net::TcpListener;
 use vortexssh_core::config::AuthMethod;
-use vortexssh_core::keys::{generate, KeyKind};
+use vortexssh_core::keys::{generate, save_openssh, KeyKind};
 use vortexssh_core::prompt::{KiPrompt, Prompter};
 use vortexssh_core::ssh::{AcceptAll, Session};
 use vortexssh_core::Error;
@@ -17,13 +18,31 @@ const PASSWORD: &str = "hunter2";
 const OTP: &str = "123456";
 
 /// Password, then OTP: the shape of a typical 2FA keyboard-interactive login.
+/// Also accepts one public key, when configured.
 #[derive(Default)]
 struct TwoFactorServer {
     password_ok: bool,
+    authorized: Option<PublicKey>,
 }
 
 impl server::Handler for TwoFactorServer {
     type Error = russh::Error;
+
+    // Like sshd, only acknowledge (PK_OK) keys that are authorized.
+    async fn auth_publickey_offered(
+        &mut self,
+        user: &str,
+        key: &PublicKey,
+    ) -> Result<Auth, Self::Error> {
+        self.auth_publickey(user, key).await
+    }
+
+    async fn auth_publickey(&mut self, _user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
+        Ok(match &self.authorized {
+            Some(k) if k.key_data() == key.key_data() => Auth::Accept,
+            _ => Auth::reject(),
+        })
+    }
 
     async fn auth_password(&mut self, _user: &str, password: &str) -> Result<Auth, Self::Error> {
         Ok(if password == PASSWORD {
@@ -59,11 +78,17 @@ impl server::Handler for TwoFactorServer {
 
 /// Starts a one-connection server and returns its port.
 async fn serve_once() -> u16 {
+    serve(
+        &[MethodKind::Password, MethodKind::KeyboardInteractive],
+        None,
+    )
+    .await
+}
+
+async fn serve(offered: &[MethodKind], authorized: Option<PublicKey>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let mut methods = russh::MethodSet::empty();
-    methods.push(MethodKind::Password);
-    methods.push(MethodKind::KeyboardInteractive);
+    let methods = russh::MethodSet::from(offered);
     let config = Arc::new(server::Config {
         keys: vec![generate(KeyKind::Ed25519, "").unwrap()],
         methods,
@@ -73,7 +98,11 @@ async fn serve_once() -> u16 {
     });
     tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
-        if let Ok(session) = server::run_stream(config, socket, TwoFactorServer::default()).await {
+        let handler = TwoFactorServer {
+            authorized,
+            ..Default::default()
+        };
+        if let Ok(session) = server::run_stream(config, socket, handler).await {
             let _ = session.await;
         }
     });
@@ -187,4 +216,122 @@ async fn cancelling_a_prompt_aborts() {
     let p = Scripted::new(&[None]);
     let err = connect(AuthMethod::Password, p).await.err().unwrap();
     assert!(matches!(err, Error::Cancelled), "{err}");
+}
+
+/// Writes a fresh key to a temp file; returns its path and public key.
+fn key_file(name: &str, passphrase: Option<&str>) -> (std::path::PathBuf, PublicKey) {
+    let dir = std::env::temp_dir().join(format!("vortexssh-auth-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    let key = generate(KeyKind::Ed25519, "").unwrap();
+    let public = key.public_key().clone();
+    let key = match passphrase {
+        Some(p) => key
+            .encrypt(
+                &mut russh::keys::ssh_key::rand_core::UnwrapErr(
+                    russh::keys::ssh_key::getrandom::SysRng,
+                ),
+                p,
+            )
+            .unwrap(),
+        None => key,
+    };
+    save_openssh(&key, &path).unwrap();
+    (path, public)
+}
+
+fn auto(identities: &[&std::path::Path]) -> AuthMethod {
+    AuthMethod::Auto {
+        identities: identities.iter().map(|p| p.display().to_string()).collect(),
+    }
+}
+
+async fn connect_to(
+    port: u16,
+    auth: AuthMethod,
+    prompter: Arc<Scripted>,
+) -> vortexssh_core::Result<Session> {
+    Session::connect(
+        "127.0.0.1",
+        port,
+        "alice",
+        &auth,
+        prompter,
+        Arc::new(AcceptAll),
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_uses_key_without_prompting() {
+    let (path, public) = key_file("plain", None);
+    let port = serve(&[MethodKind::PublicKey, MethodKind::Password], Some(public)).await;
+    let p = Scripted::new(&[]);
+    connect_to(port, auto(&[&path]), p.clone()).await.unwrap();
+    assert!(p.asked().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_asks_passphrase_only_for_accepted_key() {
+    let (rejected, _) = key_file("other_enc", Some("nope"));
+    let (accepted, public) = key_file("enc", Some("pw"));
+    let port = serve(&[MethodKind::PublicKey], Some(public)).await;
+    let p = Scripted::new(&[Some("typo"), Some("pw")]);
+    connect_to(port, auto(&[&rejected, &accepted]), p.clone())
+        .await
+        .unwrap();
+    let asked: Vec<String> = p.asked().into_iter().map(|(q, _)| q).collect();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(
+        asked
+            .iter()
+            .all(|q| q.contains("enc") && !q.contains("other")),
+        "{asked:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_falls_back_to_password() {
+    let (path, _) = key_file("unauthorized", None);
+    let port = serve(&[MethodKind::PublicKey, MethodKind::Password], None).await;
+    let p = Scripted::new(&[Some(PASSWORD)]);
+    connect_to(port, auto(&[&path]), p.clone()).await.unwrap();
+    assert_eq!(p.asked().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_prefers_keyboard_interactive_when_offered() {
+    let p = Scripted::new(&[Some(PASSWORD), Some(OTP)]);
+    let port = serve_once().await;
+    connect_to(port, auto(&[]), p.clone()).await.unwrap();
+    assert_eq!(p.asked()[1].0, "Verification code: ");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_failure_lists_what_was_tried() {
+    let (path, _) = key_file("nobody", None);
+    let port = serve(&[MethodKind::PublicKey], None).await;
+    let err = connect_to(port, auto(&[&path]), Scripted::new(&[]))
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err.contains("nobody") && err.contains("server accepts: publickey"),
+        "{err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_key_file_fails_before_connecting() {
+    let err = connect_to(
+        1,
+        auto(&[std::path::Path::new("/no/such/key")]),
+        Scripted::new(&[]),
+    )
+    .await
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(err.contains("/no/such/key not found"), "{err}");
 }

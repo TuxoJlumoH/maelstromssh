@@ -28,6 +28,8 @@ impl Target {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum AuthChoice {
+    /// Agent, then key files, then keyboard-interactive or password.
+    Auto,
     Password,
     Key,
     Agent,
@@ -38,6 +40,12 @@ impl AuthChoice {
     /// Builds the auth method; `key` needs an identity file.
     pub fn into_method(self, identity: Option<PathBuf>) -> Result<AuthMethod> {
         Ok(match self {
+            AuthChoice::Auto => AuthMethod::Auto {
+                identities: identity
+                    .map(|p| p.display().to_string())
+                    .into_iter()
+                    .collect(),
+            },
             AuthChoice::Password => AuthMethod::Password,
             AuthChoice::Key => {
                 let path = identity
@@ -52,16 +60,10 @@ impl AuthChoice {
     }
 }
 
-/// Picks the auth method from optional `--auth` and `-i` flags: an explicit
-/// choice wins, a bare `-i` means public key, otherwise password.
+/// Picks the auth method from optional `--auth` and `-i` flags. Without
+/// `--auth` this is automatic, with `-i` (if given) tried first.
 pub fn auth_from_flags(auth: Option<AuthChoice>, identity: Option<PathBuf>) -> Result<AuthMethod> {
-    match (auth, identity) {
-        (Some(choice), id) => choice.into_method(id),
-        (None, Some(id)) => Ok(AuthMethod::PublicKey {
-            key_path: id.display().to_string(),
-        }),
-        (None, None) => Ok(AuthMethod::Password),
-    }
+    auth.unwrap_or(AuthChoice::Auto).into_method(identity)
 }
 
 /// Splits `user@host` into `(user, host)`; a bare host gets `$USER`.
@@ -85,13 +87,14 @@ pub struct TargetArgs {
     /// Port (default 22).
     #[cfg_attr(feature = "clap", arg(short = 'p', long))]
     pub port: Option<u16>,
-    /// Private key for public-key auth.
+    /// Private key to try first (the agent and password still work as
+    /// fallbacks unless --auth says otherwise).
     #[cfg_attr(feature = "clap", arg(short = 'i', long))]
     pub identity: Option<PathBuf>,
     /// Load connection settings from a saved profile.
     #[cfg_attr(feature = "clap", arg(long, conflicts_with = "target"))]
     pub profile: Option<String>,
-    /// Override the authentication method.
+    /// Authentication method (default: auto).
     #[cfg_attr(feature = "clap", arg(long, value_enum))]
     pub auth: Option<AuthChoice>,
 }
@@ -109,9 +112,7 @@ impl TargetArgs {
             let auth = match self.auth {
                 Some(choice) => choice.into_method(self.identity)?,
                 None => match self.identity {
-                    Some(id) => AuthMethod::PublicKey {
-                        key_path: id.display().to_string(),
-                    },
+                    Some(id) => AuthChoice::Auto.into_method(Some(id))?,
                     None => p.auth,
                 },
             };
@@ -157,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn bare_identity_means_public_key() {
+    fn bare_identity_is_tried_first_in_auto() {
         let t = TargetArgs {
             target: Some("bob@h".into()),
             identity: Some("/k".into()),
@@ -165,8 +166,19 @@ mod tests {
         }
         .resolve_with(&ProfileStore::new("/nonexistent"))
         .unwrap();
-        assert!(matches!(t.auth, AuthMethod::PublicKey { ref key_path } if key_path == "/k"));
+        assert!(matches!(t.auth, AuthMethod::Auto { ref identities } if identities == &["/k"]));
         assert_eq!(t.port, 22);
+    }
+
+    #[test]
+    fn default_is_auto_with_default_keys() {
+        let t = TargetArgs {
+            target: Some("h".into()),
+            ..Default::default()
+        }
+        .resolve_with(&ProfileStore::new("/nonexistent"))
+        .unwrap();
+        assert!(matches!(t.auth, AuthMethod::Auto { ref identities } if identities.is_empty()));
     }
 
     #[test]

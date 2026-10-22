@@ -1,24 +1,18 @@
 use std::io::ErrorKind;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use russh::client::{self, Handle, KeyboardInteractiveAuthResponse, Msg};
-use russh::keys::{PrivateKey, PrivateKeyWithHashAlg};
+use russh::client::{self, Handle, Msg};
 use russh::Channel;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 use crate::config::AuthMethod;
 use crate::error::{Error, Result};
-use crate::keys;
-use crate::paths::expand_tilde;
-use crate::prompt::{KiPrompt, Prompter};
+use crate::prompt::Prompter;
 
+use super::auth::{Authenticator, KeyFile};
 use super::client::{ClientHandler, HostKeyVerifier, ServerEvent};
-
-/// How many times to re-ask for a mistyped password or passphrase.
-const SECRET_ATTEMPTS: usize = 3;
 
 /// A connected, authenticated SSH session. Wraps a `russh::client::Handle`
 /// so callers (CLI/TUI/GUI) never touch `russh` types directly.
@@ -91,6 +85,8 @@ impl Session {
             rejection: rejection.clone(),
         };
 
+        // Read key files first so a bad path fails before any network I/O.
+        let keys = KeyFile::for_method(auth)?;
         let socket = connect_tcp(host, port).await?;
         let mut handle = match client::connect_stream(config, socket, handler).await {
             Ok(h) => h,
@@ -106,24 +102,14 @@ impl Session {
             }
         };
 
-        let authenticated = match auth {
-            AuthMethod::Password => {
-                authenticate_password(&mut handle, user, host, &prompter).await?
-            }
-            AuthMethod::PublicKey { key_path } => {
-                let key = load_key(&expand_tilde(key_path), &prompter).await?;
-                authenticate_key(&mut handle, user, key).await?
-            }
-            AuthMethod::Agent => authenticate_agent(&mut handle, user).await?,
-            AuthMethod::KeyboardInteractive => {
-                authenticate_keyboard_interactive(&mut handle, user, &prompter).await?
-            }
-        };
-
-        if !authenticated {
+        let outcome = Authenticator::new(&mut handle, user, host, &prompter)
+            .run(auth, keys)
+            .await?;
+        if let Err(details) = outcome {
             return Err(Error::AuthFailed {
                 user: user.to_string(),
                 host: host_label(host, port),
+                details,
             });
         }
 
@@ -250,167 +236,4 @@ pub(crate) fn host_label(host: &str, port: u16) -> String {
     } else {
         format!("[{host}]:{port}")
     }
-}
-
-/// Runs a (possibly blocking) prompt without stalling the async executor.
-async fn ask<T, F>(prompter: &Arc<dyn Prompter>, f: F) -> Result<T>
-where
-    T: Send + 'static,
-    F: FnOnce(&dyn Prompter) -> Option<T> + Send + 'static,
-{
-    let prompter = prompter.clone();
-    tokio::task::spawn_blocking(move || f(prompter.as_ref()))
-        .await
-        .map_err(|e| Error::Other(format!("prompt task failed: {e}")))?
-        .ok_or(Error::Cancelled)
-}
-
-async fn authenticate_password(
-    handle: &mut Handle<ClientHandler>,
-    user: &str,
-    host: &str,
-    prompter: &Arc<dyn Prompter>,
-) -> Result<bool> {
-    let label = format!("{user}@{host}'s password: ");
-    for _ in 0..SECRET_ATTEMPTS {
-        let label = label.clone();
-        let password = ask(prompter, move |p| p.secret(&label)).await?;
-        if handle
-            .authenticate_password(user, password)
-            .await
-            .map_err(Error::Ssh)?
-            .success()
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Loads a private key, asking for its passphrase only if it is encrypted.
-async fn load_key(path: &Path, prompter: &Arc<dyn Prompter>) -> Result<PrivateKey> {
-    match keys::load_openssh(path, None) {
-        Err(Error::RusshKey(russh::keys::Error::KeyIsEncrypted)) => {}
-        Err(Error::RusshKey(russh::keys::Error::IO(e))) if e.kind() == ErrorKind::NotFound => {
-            return Err(Error::Config(format!(
-                "key file {} not found",
-                path.display()
-            )))
-        }
-        other => {
-            return other
-                .map_err(|e| Error::Config(format!("cannot load key {}: {e}", path.display())))
-        }
-    }
-    let label = format!("Passphrase for {}: ", path.display());
-    for _ in 0..SECRET_ATTEMPTS {
-        let label = label.clone();
-        let passphrase = ask(prompter, move |p| p.secret(&label)).await?;
-        if let Ok(key) = keys::load_openssh(path, Some(&passphrase)) {
-            return Ok(key);
-        }
-    }
-    Err(Error::Config(format!(
-        "wrong passphrase for {}",
-        path.display()
-    )))
-}
-
-async fn authenticate_key(
-    handle: &mut Handle<ClientHandler>,
-    user: &str,
-    key: PrivateKey,
-) -> Result<bool> {
-    let hash_alg = handle
-        .best_supported_rsa_hash()
-        .await
-        .map_err(Error::Ssh)?
-        .flatten();
-    Ok(handle
-        .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg))
-        .await
-        .map_err(Error::Ssh)?
-        .success())
-}
-
-/// Runs a keyboard-interactive exchange: the server may send any number of
-/// challenge rounds (e.g. password, then an OTP code) before deciding.
-async fn authenticate_keyboard_interactive(
-    handle: &mut Handle<ClientHandler>,
-    user: &str,
-    prompter: &Arc<dyn Prompter>,
-) -> Result<bool> {
-    let mut response = handle
-        .authenticate_keyboard_interactive_start(user, None)
-        .await
-        .map_err(Error::Ssh)?;
-    loop {
-        match response {
-            KeyboardInteractiveAuthResponse::Success => return Ok(true),
-            KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
-            KeyboardInteractiveAuthResponse::InfoRequest {
-                name,
-                instructions,
-                prompts,
-            } => {
-                let answers = if prompts.is_empty() {
-                    Vec::new()
-                } else {
-                    let prompts: Vec<KiPrompt> = prompts
-                        .into_iter()
-                        .map(|p| KiPrompt {
-                            text: p.prompt,
-                            echo: p.echo,
-                        })
-                        .collect();
-                    ask(prompter, move |p| {
-                        p.keyboard_interactive(&name, &instructions, &prompts)
-                    })
-                    .await?
-                };
-                response = handle
-                    .authenticate_keyboard_interactive_respond(answers)
-                    .await
-                    .map_err(Error::Ssh)?;
-            }
-        }
-    }
-}
-
-/// Authenticate by trying each identity exposed by the local ssh-agent.
-async fn authenticate_agent(handle: &mut Handle<ClientHandler>, user: &str) -> Result<bool> {
-    let rsa_hash = handle
-        .best_supported_rsa_hash()
-        .await
-        .map_err(Error::Ssh)?
-        .flatten();
-
-    let mut agent = keys::agent::connect_env().await?;
-    let identities = keys::agent::list_identities(&mut agent).await?;
-
-    if identities.is_empty() {
-        tracing::debug!("ssh-agent reported no identities");
-        return Ok(false);
-    }
-
-    for identity in &identities {
-        let public_key = identity.public_key().into_owned();
-        // RSA requires a hash alg to signal rsa-sha2-256/512; other key
-        // types ignore this parameter.
-        let hash_alg = if public_key.algorithm().is_rsa() {
-            rsa_hash
-        } else {
-            None
-        };
-        tracing::debug!("trying agent identity: {}", identity.comment());
-        let result = handle
-            .authenticate_publickey_with(user, public_key, hash_alg, &mut agent)
-            .await
-            .map_err(Error::AgentAuth)?;
-        if result.success() {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
 }

@@ -9,6 +9,7 @@ pub struct Profile {
     #[serde(default = "default_port")]
     pub port: u16,
     pub user: String,
+    #[serde(default)]
     pub auth: AuthMethod,
     #[serde(default)]
     pub forwards: Vec<ForwardRule>,
@@ -23,6 +24,13 @@ fn default_port() -> u16 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum AuthMethod {
+    /// Whatever works, as OpenSSH does it: ssh-agent keys, then key files
+    /// (`identities`, or the default `~/.ssh/id_*` keys when empty), then
+    /// keyboard-interactive or a password prompt.
+    Auto {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        identities: Vec<String>,
+    },
     /// Prompt for a password interactively; never stored in the profile.
     Password,
     /// Public key auth with an OpenSSH-format private key.
@@ -31,6 +39,14 @@ pub enum AuthMethod {
     Agent,
     /// keyboard-interactive (e.g. 2FA prompts).
     KeyboardInteractive,
+}
+
+impl Default for AuthMethod {
+    fn default() -> Self {
+        AuthMethod::Auto {
+            identities: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

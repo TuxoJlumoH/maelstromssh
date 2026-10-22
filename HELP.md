@@ -29,13 +29,18 @@ connection; a profile stores it for reuse.
 
 | `--auth` value | Meaning |
 |---|---|
+| `auto` | Like OpenSSH: `ssh-agent` keys, then key files, then keyboard-interactive or a password prompt (whatever the server accepts). |
 | `password` | Prompt for a password (never stored in a profile). Up to 3 attempts. |
 | `key` | Public-key auth; needs `-i/--identity <PATH>` (OpenSSH format). Prompts for a passphrase if the key is encrypted. |
 | `agent` | Delegate to a running `ssh-agent` (via `$SSH_AUTH_SOCK`); every identity is tried. |
 | `keyboard-interactive` | Server-driven prompts, e.g. password followed by a 2FA/OTP code. |
 
-The **default** is `password`, or `key` when `-i/--identity` is given without an
-explicit `--auth`.
+The **default** is `auto`. Without `-i` it tries the agent, then the default
+keys `~/.ssh/id_ed25519`, `~/.ssh/id_ecdsa` and `~/.ssh/id_rsa`. With `-i` that
+key is tried first, then the agent. The same key is never offered twice, and
+a key's passphrase is only asked for once the server accepts the key. Use
+`--auth key` to try *only* the given key. When everything fails, the error
+lists what was tried and which methods the server accepts.
 
 Host keys are verified against `~/.ssh/known_hosts` (trust-on-first-use with a
 confirmation prompt; a *changed* key is always rejected). Host certificates
@@ -59,9 +64,9 @@ vortexssh connect [TARGET] [OPTIONS]
 |---|---|
 | `TARGET` | `user@host`, or just `host` (defaults to `$USER`). Omit when using `--profile`. |
 | `-p, --port <PORT>` | Port (default `22`). |
-| `-i, --identity <PATH>` | Private key path. |
+| `-i, --identity <PATH>` | Private key to try first (`~` is expanded). |
 | `--profile <NAME>` | Load settings from a saved profile (conflicts with `TARGET`). |
-| `--auth <AUTH>` | Override the auth method. |
+| `--auth <AUTH>` | Auth method (default `auto`, see §2). |
 | `-L, --local-forward <SPEC>` | Local forward `[bind:]port:host:hostport` (repeatable). |
 | `-R, --remote-forward <SPEC>` | Remote forward `[bind:]port:host:hostport` (repeatable). |
 | `-D, --dynamic-forward <SPEC>` | SOCKS5 forward `[bind:]port` (repeatable). |
@@ -164,9 +169,9 @@ vortexssh-tui [TARGET] [OPTIONS]
 |---|---|
 | `TARGET` | `user@host` or `host`. |
 | `-p, --port <PORT>` | Port (default `22`). |
-| `-i, --identity <PATH>` | Private key path. |
+| `-i, --identity <PATH>` | Private key to try first (`~` is expanded). |
 | `--profile <NAME>` | Load a saved profile (conflicts with `TARGET`). |
-| `--auth <AUTH>` | Override the auth method. |
+| `--auth <AUTH>` | Auth method (default `auto`, see §2). |
 
 ```bash
 vortexssh-tui user@example.com
@@ -227,8 +232,9 @@ forwards = [
 terminal = { term_type = "xterm-256color", scrollback_lines = 10000 }
 ```
 
-`auth` methods serialize as `password`, `public_key` (with `key_path`),
-`agent`, or `keyboard_interactive`. `forwards` and `terminal` are optional.
+`auth` methods serialize as `auto` (with optional `identities`), `password`,
+`public_key` (with `key_path`), `agent`, or `keyboard_interactive`. `auth`,
+`forwards` and `terminal` are optional; a missing `auth` means `auto`.
 
 ---
 
@@ -239,7 +245,7 @@ The engine every front-end uses. No UI/rendering code lives here.
 ### `config` — persisted profiles
 
 - `Profile { name, host, port, user, auth, forwards, terminal }`
-- `AuthMethod::{ Password, PublicKey{key_path}, Agent, KeyboardInteractive }`
+- `AuthMethod::{ Auto{identities}, Password, PublicKey{key_path}, Agent, KeyboardInteractive }` (default `Auto` with no identities)
 - `ForwardRule { kind, bind_host, bind_port, dest_host, dest_port }` / `ForwardKind::{ Local, Remote, Dynamic }`
 - `TerminalSettings { term_type, scrollback_lines, color_scheme }`
 - `ProfileStore` — `new(dir)`, `default_location()`, `list()`, `load(name)`, `save(&profile)`, `delete(name)`
@@ -322,7 +328,7 @@ forwarding tasks.
 ### `error`
 
 - `Result<T>` = `std::result::Result<T, Error>`
-- `Error::{ Ssh, Sftp, Key, RusshKey, AgentAuth, Io, Config, HostKeyVerification, HostKeyRejected, AuthFailed, Cancelled, Other }`
+- `Error::{ Ssh, Sftp, Key, RusshKey, AgentAuth, Io, Config, Connect, HostKeyVerification, HostKeyRejected, AuthFailed, Cancelled, Other }`
 
 ---
 

@@ -34,12 +34,25 @@ pub enum Error {
     #[error("host key for {host} was not accepted")]
     HostKeyRejected { host: String },
 
-    #[error("authentication failed for {user}@{host}")]
-    AuthFailed { user: String, host: String },
+    #[error("authentication failed for {user}@{host}{details}")]
+    AuthFailed {
+        user: String,
+        host: String,
+        /// What was tried and what the server accepts, e.g.
+        /// " (tried password); the server accepts: publickey".
+        details: String,
+    },
 
     #[error("cancelled")]
     Cancelled,
 
     #[error("{0}")]
     Other(String),
+}
+
+/// Lets core errors flow out of a `russh::Signer` used during auth.
+impl From<russh::SendError> for Error {
+    fn from(_: russh::SendError) -> Self {
+        Error::Other("the connection closed during authentication".into())
+    }
 }

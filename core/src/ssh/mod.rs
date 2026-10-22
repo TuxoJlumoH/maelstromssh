@@ -2,6 +2,7 @@
 //! channels. Wraps `russh` behind a small API so callers (CLI/TUI/GUI) never
 //! touch `russh` types directly.
 
+mod auth;
 mod client;
 mod session;
 

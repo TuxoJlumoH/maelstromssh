@@ -359,6 +359,8 @@ fn profile_show(name: String) -> Result<()> {
         .load(&name)
         .with_context(|| format!("loading profile '{name}'"))?;
     let auth = match &p.auth {
+        AuthMethod::Auto { identities } if identities.is_empty() => "auto".to_string(),
+        AuthMethod::Auto { identities } => format!("auto ({})", identities.join(", ")),
         AuthMethod::Password => "password".to_string(),
         AuthMethod::PublicKey { key_path, .. } => format!("public-key ({key_path})"),
         AuthMethod::Agent => "agent".to_string(),
