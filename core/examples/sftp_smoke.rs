@@ -8,9 +8,9 @@
 
 use std::sync::Arc;
 
-use vortexssh_core::sftp;
 use vortexssh_core::config::AuthMethod;
 use vortexssh_core::prompt::NoPrompt;
+use vortexssh_core::sftp;
 use vortexssh_core::ssh::{AcceptAll, Session};
 
 #[tokio::main]

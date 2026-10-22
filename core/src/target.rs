@@ -40,9 +40,8 @@ impl AuthChoice {
         Ok(match self {
             AuthChoice::Password => AuthMethod::Password,
             AuthChoice::Key => {
-                let path = identity.ok_or_else(|| {
-                    Error::Config("--auth key requires --identity <PATH>".into())
-                })?;
+                let path = identity
+                    .ok_or_else(|| Error::Config("--auth key requires --identity <PATH>".into()))?;
                 AuthMethod::PublicKey {
                     key_path: path.display().to_string(),
                 }
@@ -149,7 +148,10 @@ mod tests {
 
     #[test]
     fn splits_user_and_host() {
-        assert_eq!(split_target("alice@example.com"), ("alice".into(), "example.com".into()));
+        assert_eq!(
+            split_target("alice@example.com"),
+            ("alice".into(), "example.com".into())
+        );
         let (_, host) = split_target("example.com");
         assert_eq!(host, "example.com");
     }
@@ -201,7 +203,10 @@ mod tests {
         }
         .resolve_with(&store)
         .unwrap();
-        assert_eq!((t.host.as_str(), t.port, t.user.as_str()), ("10.0.0.5", 2222, "admin"));
+        assert_eq!(
+            (t.host.as_str(), t.port, t.user.as_str()),
+            ("10.0.0.5", 2222, "admin")
+        );
         assert!(matches!(t.auth, AuthMethod::Password));
 
         let t = TargetArgs {

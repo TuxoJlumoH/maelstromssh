@@ -55,21 +55,33 @@ pub async fn start_all(session: &mut Session, rules: &[ForwardRule]) -> Result<V
         let dest_port = rule.dest_port.unwrap_or(0);
         match rule.kind {
             ForwardKind::Local => {
-                let local =
-                    forward_local(handle.clone(), &rule.bind_host, rule.bind_port, dest_host.clone(), dest_port)
-                        .await?;
+                let local = forward_local(
+                    handle.clone(),
+                    &rule.bind_host,
+                    rule.bind_port,
+                    dest_host.clone(),
+                    dest_port,
+                )
+                .await?;
                 infos.push(ForwardInfo::Local {
                     local,
                     dest: format!("{dest_host}:{dest_port}"),
                 });
             }
             ForwardKind::Dynamic => {
-                let local = forward_dynamic(handle.clone(), &rule.bind_host, rule.bind_port).await?;
+                let local =
+                    forward_dynamic(handle.clone(), &rule.bind_host, rule.bind_port).await?;
                 infos.push(ForwardInfo::Dynamic { local });
             }
             ForwardKind::Remote => {
-                let port = handle.tcpip_forward(&rule.bind_host, rule.bind_port).await?;
-                let actual = if rule.bind_port == 0 { port } else { rule.bind_port };
+                let port = handle
+                    .tcpip_forward(&rule.bind_host, rule.bind_port)
+                    .await?;
+                let actual = if rule.bind_port == 0 {
+                    port
+                } else {
+                    rule.bind_port
+                };
                 remote_map.insert(actual, (dest_host.clone(), dest_port));
                 infos.push(ForwardInfo::Remote {
                     port: actual,
@@ -143,7 +155,10 @@ pub async fn forward_dynamic(
 
 /// Consumes server-initiated `forwarded-tcpip` channels and bridges each to
 /// the local destination it maps to (by the port the server bound).
-async fn remote_dispatcher(mut rx: UnboundedReceiver<ServerEvent>, map: HashMap<u16, (String, u16)>) {
+async fn remote_dispatcher(
+    mut rx: UnboundedReceiver<ServerEvent>,
+    map: HashMap<u16, (String, u16)>,
+) {
     while let Some(evt) = rx.recv().await {
         let ServerEvent::ForwardedTcpIp {
             channel,
@@ -297,10 +312,7 @@ mod tests {
     #[test]
     fn parses_ipv4_address() {
         let buf = [0x01, 127, 0, 0, 1, 0x1f, 0x90]; // 127.0.0.1:8080
-        assert_eq!(
-            parse_socks_addr(&buf),
-            Some(("127.0.0.1".into(), 8080, 7))
-        );
+        assert_eq!(parse_socks_addr(&buf), Some(("127.0.0.1".into(), 8080, 7)));
     }
 
     #[test]
@@ -320,10 +332,7 @@ mod tests {
         buf.extend_from_slice(&[0; 15]);
         buf.push(1); // ::1
         buf.extend_from_slice(&[0x1b, 0x58]); // :7000
-        assert_eq!(
-            parse_socks_addr(&buf),
-            Some(("::1".into(), 7000, 19))
-        );
+        assert_eq!(parse_socks_addr(&buf), Some(("::1".into(), 7000, 19)));
     }
 
     #[test]

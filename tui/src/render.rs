@@ -1,11 +1,11 @@
 //! ratatui rendering: maps core terminal cells onto a `Buffer` and draws the
 //! session grid plus a one-line status bar.
 
-use vortexssh_core::term::{Attrs, Color, Terminal};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Widget;
+use vortexssh_core::term::{Attrs, Color, Terminal};
 
 /// Draws the terminal grid over `area`, translating core [`Attrs`] into
 /// ratatui [`Style`]. `show_cursor` positions the block cursor on the live
@@ -71,7 +71,9 @@ impl Widget for StatusBar {
 }
 
 fn style_for(attrs: &Attrs) -> Style {
-    let mut style = Style::default().fg(map_color(attrs.fg)).bg(map_color(attrs.bg));
+    let mut style = Style::default()
+        .fg(map_color(attrs.fg))
+        .bg(map_color(attrs.bg));
     if attrs.bold {
         style = style.add_modifier(Modifier::BOLD);
     }

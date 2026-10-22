@@ -125,7 +125,9 @@ async fn main() -> Result<()> {
             dynamic,
         } => {
             let mut target = target.resolve()?;
-            target.forwards.extend(parse_forwards(local, remote, dynamic)?);
+            target
+                .forwards
+                .extend(parse_forwards(local, remote, dynamic)?);
             connect(target).await
         }
         Command::Profile { cmd } => match cmd {

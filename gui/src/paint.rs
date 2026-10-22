@@ -207,12 +207,15 @@ mod tests {
     fn wide_char_counts_two_cells() {
         let mut cells = vec![cell('a'), cell('日'), cell('b')];
         cells[1].wide = true;
-        cells.insert(2, Cell {
-            ch: ' ',
-            attrs: Attrs::default(),
-            wide: false,
-            continuation: true,
-        });
+        cells.insert(
+            2,
+            Cell {
+                ch: ' ',
+                attrs: Attrs::default(),
+                wide: false,
+                continuation: true,
+            },
+        );
         let runs = build_runs(&cells, &Palette::default());
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].text, "a日b");

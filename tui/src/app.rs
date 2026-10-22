@@ -7,8 +7,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{Event, KeyEventKind, MouseButton, MouseEventKind};
-use vortexssh_core::ssh::{Channel, ChannelMsg, Msg};
-use vortexssh_core::term::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, EventStream};
 use ratatui::crossterm::execute;
@@ -18,6 +16,8 @@ use ratatui::crossterm::terminal::{
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Terminal as RatuiTerminal;
 use tokio_stream::StreamExt;
+use vortexssh_core::ssh::{Channel, ChannelMsg, Msg};
+use vortexssh_core::term::Terminal;
 
 use crate::input::{encode_key, encode_sgr_mouse, scroll_action, ScrollAction};
 use crate::render::{GridView, StatusBar};
@@ -203,7 +203,10 @@ fn draw_frame(
     endpoint: &str,
     connected: bool,
 ) -> Result<()> {
-    let label = term.title().map(str::to_string).unwrap_or_else(|| endpoint.to_string());
+    let label = term
+        .title()
+        .map(str::to_string)
+        .unwrap_or_else(|| endpoint.to_string());
     let offset = term.viewport_offset();
     let right = if !connected {
         "closed — press any key to exit".to_string()

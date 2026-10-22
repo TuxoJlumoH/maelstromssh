@@ -249,7 +249,9 @@ impl GuiApp {
                 ..
             } => {
                 ui.strong("Unknown host key");
-                ui.label(format!("The authenticity of '{host}:{port}' can't be established."));
+                ui.label(format!(
+                    "The authenticity of '{host}:{port}' can't be established."
+                ));
                 ui.monospace(fingerprint.as_str());
                 ui.label("Only accept if this matches the fingerprint you expect.");
                 ui.add_space(8.0);
@@ -308,7 +310,9 @@ impl GuiApp {
 
         // Measure the monospace cell and resize the emulator to match.
         let font = FontId::monospace(self.font_size);
-        let (cw, rh) = ui.ctx().fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
+        let (cw, rh) = ui
+            .ctx()
+            .fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
         let cols = ((grid_rect.width() / cw).floor() as u32).max(1);
         let rows = ((grid_rect.height() / rh).floor() as u32).max(1);
         if cols != self.cols || rows != self.rows {
@@ -446,10 +450,10 @@ impl GuiApp {
         if !self.grid_rect.contains(pos) {
             return None;
         }
-        let col = (((pos.x - self.grid_rect.min.x) / self.char_w).floor() as u32)
-            .min(self.cols - 1) as u16;
-        let row = (((pos.y - self.grid_rect.min.y) / self.row_h).floor() as u32)
-            .min(self.rows - 1) as u16;
+        let col = (((pos.x - self.grid_rect.min.x) / self.char_w).floor() as u32).min(self.cols - 1)
+            as u16;
+        let row = (((pos.y - self.grid_rect.min.y) / self.row_h).floor() as u32).min(self.rows - 1)
+            as u16;
         Some((col, row))
     }
 
@@ -476,7 +480,13 @@ impl GuiApp {
                     );
                 }
                 let text_pos = pos2(x0, y0);
-                painter.text(text_pos, Align2::LEFT_TOP, run.text.as_str(), font.clone(), run.fg);
+                painter.text(
+                    text_pos,
+                    Align2::LEFT_TOP,
+                    run.text.as_str(),
+                    font.clone(),
+                    run.fg,
+                );
                 if run.bold {
                     painter.text(
                         pos2(x0 + 0.6, y0),
@@ -488,16 +498,17 @@ impl GuiApp {
                 }
                 if run.underline {
                     painter.line_segment(
-                        [pos2(x0, y0 + self.row_h - 1.0), pos2(x0 + w, y0 + self.row_h - 1.0)],
+                        [
+                            pos2(x0, y0 + self.row_h - 1.0),
+                            pos2(x0 + w, y0 + self.row_h - 1.0),
+                        ],
                         Stroke::new(1.0, run.fg),
                     );
                 }
                 if run.strikethrough {
                     let my = y0 + self.row_h * 0.5;
-                    painter.line_segment(
-                        [pos2(x0, my), pos2(x0 + w, my)],
-                        Stroke::new(1.0, run.fg),
-                    );
+                    painter
+                        .line_segment([pos2(x0, my), pos2(x0 + w, my)], Stroke::new(1.0, run.fg));
                 }
             }
 
@@ -547,7 +558,11 @@ impl GuiApp {
 
 /// OK/Cancel row for text prompts. Enter submits.
 fn submit_buttons(ui: &mut egui::Ui, enter: bool) -> Outcome {
-    let mut out = if enter { Outcome::Answered } else { Outcome::Pending };
+    let mut out = if enter {
+        Outcome::Answered
+    } else {
+        Outcome::Pending
+    };
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         if ui.button("OK").clicked() {

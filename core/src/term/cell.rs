@@ -4,15 +4,13 @@
 
 /// A terminal color, either the theme default, a 256-palette index, or 24-bit
 /// RGB (the SGR `38;5;n` / `38;2;r;g;b` forms).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Color {
     #[default]
     Default,
     Indexed(u8),
     Rgb(u8, u8, u8),
 }
-
 
 /// SGR attributes carried by each cell. Only the states a front-end can
 /// render are tracked; exotic modes (protected area, etc.) are parsed and

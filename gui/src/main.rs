@@ -58,9 +58,7 @@ fn main() -> Result<()> {
     let result = eframe::run_native(
         "VortexSSH",
         options,
-        Box::new(move |_cc| {
-            Ok(Box::new(GuiApp::new(target, term_type, handle)))
-        }),
+        Box::new(move |_cc| Ok(Box::new(GuiApp::new(target, term_type, handle)))),
     );
 
     // The window closed; give the background connect/shell task a moment to

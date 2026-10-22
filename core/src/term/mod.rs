@@ -143,7 +143,8 @@ impl Terminal {
         } else {
             (0, 0)
         };
-        self.alt_grid.resize(cols, rows, &mut inactive_cursor, self.alt_active);
+        self.alt_grid
+            .resize(cols, rows, &mut inactive_cursor, self.alt_active);
         if self.alt_active {
             if let Some(s) = &mut self.saved {
                 s.row = inactive_cursor.0;
@@ -391,20 +392,24 @@ impl Terminal {
             }
             7 => self.autowrap = on,
             9 => {
-                self.mouse_mode = if on { MouseMode::Click } else { MouseMode::None }
+                self.mouse_mode = if on {
+                    MouseMode::Click
+                } else {
+                    MouseMode::None
+                }
             }
             25 => self.cursor_visible = on,
             47 | 1047 => self.set_alt_screen(on, false),
             1049 => self.set_alt_screen(on, true),
             1000 => {
-                self.mouse_mode = if on { MouseMode::Click } else { MouseMode::None }
+                self.mouse_mode = if on {
+                    MouseMode::Click
+                } else {
+                    MouseMode::None
+                }
             }
-            1002 => {
-                self.mouse_mode = if on { MouseMode::Drag } else { MouseMode::None }
-            }
-            1003 => {
-                self.mouse_mode = if on { MouseMode::Any } else { MouseMode::None }
-            }
+            1002 => self.mouse_mode = if on { MouseMode::Drag } else { MouseMode::None },
+            1003 => self.mouse_mode = if on { MouseMode::Any } else { MouseMode::None },
             // 1006 enables SGR encoding; 1005 (UTF-8) is parsed but only SGR
             // is ever forwarded.
             1005 => {}
@@ -673,7 +678,8 @@ impl Perform for Terminal {
         let advance = if effective_wide { 2 } else { 1 };
         if effective_wide && self.cursor_col + 1 < cols {
             let cont = Cell::continuation(self.attrs);
-            self.grid.set_cell(self.cursor_row, self.cursor_col + 1, cont);
+            self.grid
+                .set_cell(self.cursor_row, self.cursor_col + 1, cont);
         }
         // Mark the row as soft-wrapped only when the deferred wrap fires; the
         // flag lives on the line the cursor leaves from.
@@ -888,16 +894,20 @@ impl Perform for Terminal {
             'L' => {
                 if self.cursor_row <= self.scroll_bottom {
                     for _ in 0..count(0) {
-                        self.grid
-                            .scroll_down_in_region(self.cursor_row.max(self.scroll_top), self.scroll_bottom);
+                        self.grid.scroll_down_in_region(
+                            self.cursor_row.max(self.scroll_top),
+                            self.scroll_bottom,
+                        );
                     }
                 }
             }
             'M' => {
                 if self.cursor_row <= self.scroll_bottom {
                     for _ in 0..count(0) {
-                        self.grid
-                            .scroll_up_in_region(self.cursor_row.max(self.scroll_top), self.scroll_bottom);
+                        self.grid.scroll_up_in_region(
+                            self.cursor_row.max(self.scroll_top),
+                            self.scroll_bottom,
+                        );
                     }
                 }
             }

@@ -102,7 +102,9 @@ impl Session {
         };
 
         let authenticated = match auth {
-            AuthMethod::Password => authenticate_password(&mut handle, user, host, &prompter).await?,
+            AuthMethod::Password => {
+                authenticate_password(&mut handle, user, host, &prompter).await?
+            }
             AuthMethod::PublicKey { key_path } => {
                 let key = load_key(Path::new(key_path), &prompter).await?;
                 authenticate_key(&mut handle, user, key).await?

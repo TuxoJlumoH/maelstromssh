@@ -98,7 +98,8 @@ impl russh::client::Handler for ClientHandler {
         // Verification may block on a user prompt, so keep it off the
         // async executor.
         let outcome = tokio::task::block_in_place(|| {
-            self.verifier.verify(&self.host, self.port, server_public_key)
+            self.verifier
+                .verify(&self.host, self.port, server_public_key)
         });
         match outcome {
             Ok(ok) => Ok(ok),

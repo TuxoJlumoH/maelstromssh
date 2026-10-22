@@ -211,13 +211,7 @@ pub fn encode_sgr_mouse(
         code += 32;
     }
     let suffix = if release { b'm' } else { b'M' };
-    format!(
-        "\x1b[<{code};{};{}{}",
-        column + 1,
-        row + 1,
-        suffix as char
-    )
-    .into_bytes()
+    format!("\x1b[<{code};{};{}{}", column + 1, row + 1, suffix as char).into_bytes()
 }
 
 #[cfg(test)]
@@ -235,13 +229,26 @@ mod tests {
 
     #[test]
     fn plain_chars_and_control() {
-        assert_eq!(encode_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), false, false), Some(b"a".to_vec()));
         assert_eq!(
-            encode_key(&key(KeyCode::Char('c'), KeyModifiers::CONTROL), false, false),
+            encode_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), false, false),
+            Some(b"a".to_vec())
+        );
+        assert_eq!(
+            encode_key(
+                &key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                false,
+                false
+            ),
             Some(vec![0x03])
         );
-        assert_eq!(encode_key(&key(KeyCode::Enter, KeyModifiers::NONE), false, false), Some(b"\r".to_vec()));
-        assert_eq!(encode_key(&key(KeyCode::Backspace, KeyModifiers::NONE), false, false), Some(vec![0x7f]));
+        assert_eq!(
+            encode_key(&key(KeyCode::Enter, KeyModifiers::NONE), false, false),
+            Some(b"\r".to_vec())
+        );
+        assert_eq!(
+            encode_key(&key(KeyCode::Backspace, KeyModifiers::NONE), false, false),
+            Some(vec![0x7f])
+        );
     }
 
     #[test]
@@ -254,8 +261,14 @@ mod tests {
 
     #[test]
     fn arrow_cursor_modes() {
-        assert_eq!(encode_key(&key(KeyCode::Up, KeyModifiers::NONE), false, false), Some(b"\x1b[A".to_vec()));
-        assert_eq!(encode_key(&key(KeyCode::Up, KeyModifiers::NONE), true, false), Some(b"\x1bOA".to_vec()));
+        assert_eq!(
+            encode_key(&key(KeyCode::Up, KeyModifiers::NONE), false, false),
+            Some(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            encode_key(&key(KeyCode::Up, KeyModifiers::NONE), true, false),
+            Some(b"\x1bOA".to_vec())
+        );
         assert_eq!(
             encode_key(&key(KeyCode::Up, KeyModifiers::CONTROL), false, false),
             Some(b"\x1b[1;5A".to_vec())
@@ -264,7 +277,13 @@ mod tests {
 
     #[test]
     fn function_keys() {
-        assert_eq!(encode_key(&key(KeyCode::F(1), KeyModifiers::NONE), false, false), Some(b"\x1bOP".to_vec()));
-        assert_eq!(encode_key(&key(KeyCode::F(5), KeyModifiers::NONE), false, false), Some(b"\x1b[15~".to_vec()));
+        assert_eq!(
+            encode_key(&key(KeyCode::F(1), KeyModifiers::NONE), false, false),
+            Some(b"\x1bOP".to_vec())
+        );
+        assert_eq!(
+            encode_key(&key(KeyCode::F(5), KeyModifiers::NONE), false, false),
+            Some(b"\x1b[15~".to_vec())
+        );
     }
 }

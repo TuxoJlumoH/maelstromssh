@@ -144,7 +144,8 @@ impl Grid {
             return;
         }
         self.screen.remove(bottom as usize);
-        self.screen.insert(top as usize, Line::blank(self.cols as usize));
+        self.screen
+            .insert(top as usize, Line::blank(self.cols as usize));
     }
 
     fn push_scrollback(&mut self, line: Line) {
@@ -244,11 +245,7 @@ impl Grid {
         let mut cursor_offset = 0usize;
         let mut run_offset = 0usize;
 
-        let all: Vec<&Line> = self
-            .scrollback
-            .iter()
-            .chain(self.screen.iter())
-            .collect();
+        let all: Vec<&Line> = self.scrollback.iter().chain(self.screen.iter()).collect();
         for (i, line) in all.iter().enumerate() {
             let starts_new = i == 0 || !all[i - 1].wrapped;
             if starts_new {
@@ -303,9 +300,7 @@ impl Grid {
                 // physical row at its clamped raw offset.
                 let last_start = (chunks - 1) * new_cols;
                 new_cursor_abs = first_row + chunks - 1;
-                cursor.1 = cursor_offset
-                    .saturating_sub(last_start)
-                    .min(new_cols - 1) as u32;
+                cursor.1 = cursor_offset.saturating_sub(last_start).min(new_cols - 1) as u32;
             }
         }
 

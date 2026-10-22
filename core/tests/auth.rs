@@ -128,13 +128,23 @@ impl Prompter for Scripted {
 
 async fn connect(auth: AuthMethod, prompter: Arc<Scripted>) -> vortexssh_core::Result<Session> {
     let port = serve_once().await;
-    Session::connect("127.0.0.1", port, "alice", &auth, prompter, Arc::new(AcceptAll)).await
+    Session::connect(
+        "127.0.0.1",
+        port,
+        "alice",
+        &auth,
+        prompter,
+        Arc::new(AcceptAll),
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn keyboard_interactive_two_rounds() {
     let p = Scripted::new(&[Some(PASSWORD), Some(OTP)]);
-    connect(AuthMethod::KeyboardInteractive, p.clone()).await.unwrap();
+    connect(AuthMethod::KeyboardInteractive, p.clone())
+        .await
+        .unwrap();
     assert_eq!(
         p.asked(),
         vec![
@@ -147,7 +157,10 @@ async fn keyboard_interactive_two_rounds() {
 #[tokio::test(flavor = "multi_thread")]
 async fn keyboard_interactive_wrong_code_fails() {
     let p = Scripted::new(&[Some(PASSWORD), Some("000000")]);
-    let err = connect(AuthMethod::KeyboardInteractive, p).await.err().unwrap();
+    let err = connect(AuthMethod::KeyboardInteractive, p)
+        .await
+        .err()
+        .unwrap();
     assert!(matches!(err, Error::AuthFailed { .. }), "{err}");
 }
 
@@ -161,7 +174,10 @@ async fn password_retries_after_typo() {
 #[tokio::test(flavor = "multi_thread")]
 async fn password_gives_up_after_three_attempts() {
     let p = Scripted::new(&[Some("a"), Some("b"), Some("c"), Some(PASSWORD)]);
-    let err = connect(AuthMethod::Password, p.clone()).await.err().unwrap();
+    let err = connect(AuthMethod::Password, p.clone())
+        .await
+        .err()
+        .unwrap();
     assert!(matches!(err, Error::AuthFailed { .. }), "{err}");
     assert_eq!(p.asked().len(), 3);
 }

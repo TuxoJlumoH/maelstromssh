@@ -77,11 +77,7 @@ pub fn encode(key: Key, mods: Modifiers, app_cursor: bool) -> KeyOut {
             // Alt+<printable> -> ESC + character (uppercased with Shift).
             if alt {
                 if let Some(c) = key_char(key) {
-                    let c = if shift {
-                        c.to_ascii_uppercase()
-                    } else {
-                        c
-                    };
+                    let c = if shift { c.to_ascii_uppercase() } else { c };
                     let mut out = vec![0x1b];
                     out.extend_from_slice(&c.to_string().into_bytes());
                     return KeyOut::Bytes(out);
@@ -275,8 +271,14 @@ mod tests {
 
     #[test]
     fn ctrl_letters_become_control_bytes() {
-        assert_eq!(encode(Key::C, m(true, false, false), false).bytes(), &[0x03]);
-        assert_eq!(encode(Key::D, m(true, false, false), false).bytes(), &[0x04]);
+        assert_eq!(
+            encode(Key::C, m(true, false, false), false).bytes(),
+            &[0x03]
+        );
+        assert_eq!(
+            encode(Key::D, m(true, false, false), false).bytes(),
+            &[0x04]
+        );
     }
 
     #[test]
@@ -289,9 +291,18 @@ mod tests {
 
     #[test]
     fn special_keys() {
-        assert_eq!(encode(Key::Enter, m(false, false, false), false).bytes(), b"\r");
-        assert_eq!(encode(Key::Backspace, m(false, false, false), false).bytes(), &[0x7f]);
-        assert_eq!(encode(Key::Tab, m(false, false, false), false).bytes(), b"\t");
+        assert_eq!(
+            encode(Key::Enter, m(false, false, false), false).bytes(),
+            b"\r"
+        );
+        assert_eq!(
+            encode(Key::Backspace, m(false, false, false), false).bytes(),
+            &[0x7f]
+        );
+        assert_eq!(
+            encode(Key::Tab, m(false, false, false), false).bytes(),
+            b"\t"
+        );
     }
 
     #[test]

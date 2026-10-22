@@ -283,9 +283,7 @@ pub fn resolve_remote(cwd: &str, path: &str) -> String {
 
 /// The final path component of a remote `/`-separated path.
 pub fn remote_basename(path: &str) -> &str {
-    path.rsplit('/')
-        .find(|s| !s.is_empty())
-        .unwrap_or(path)
+    path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(path)
 }
 
 fn local_basename(path: &Path) -> String {
@@ -302,12 +300,21 @@ pub enum Repl {
     Ls(Option<String>),
     Cd(String),
     Pwd,
-    Get { remote: String, local: Option<String> },
-    Put { local: String, remote: Option<String> },
+    Get {
+        remote: String,
+        local: Option<String>,
+    },
+    Put {
+        local: String,
+        remote: Option<String>,
+    },
     Rm(String),
     Mkdir(String),
     Rmdir(String),
-    Rename { from: String, to: String },
+    Rename {
+        from: String,
+        to: String,
+    },
     Lls(Option<String>),
     Lcd(String),
     Lpwd,
@@ -359,8 +366,14 @@ mod tests {
 
     #[test]
     fn resolves_relative_and_absolute_paths() {
-        assert_eq!(resolve_remote("/home/u", "docs/a.txt"), "/home/u/docs/a.txt");
-        assert_eq!(resolve_remote("/home/u/", "docs/a.txt"), "/home/u/docs/a.txt");
+        assert_eq!(
+            resolve_remote("/home/u", "docs/a.txt"),
+            "/home/u/docs/a.txt"
+        );
+        assert_eq!(
+            resolve_remote("/home/u/", "docs/a.txt"),
+            "/home/u/docs/a.txt"
+        );
         assert_eq!(resolve_remote("/home/u", "/etc/passwd"), "/etc/passwd");
     }
 
