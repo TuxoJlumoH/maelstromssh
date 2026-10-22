@@ -28,8 +28,14 @@ pub enum Error {
     #[error("host key verification failed for {host}: {reason}")]
     HostKeyVerification { host: String, reason: String },
 
+    #[error("host key for {host} was not accepted")]
+    HostKeyRejected { host: String },
+
     #[error("authentication failed for user {user}")]
     AuthFailed { user: String },
+
+    #[error("cancelled")]
+    Cancelled,
 
     #[error("{0}")]
     Other(String),

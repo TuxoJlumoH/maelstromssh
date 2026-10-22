@@ -5185,7 +5185,6 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
- "rpassword",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -5197,7 +5196,9 @@ name = "vortexssh-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "dirs",
+ "rpassword",
  "russh",
  "russh-sftp",
  "serde",
@@ -5233,7 +5234,6 @@ dependencies = [
  "clap",
  "crossterm",
  "ratatui",
- "rpassword",
  "tokio",
  "tokio-stream",
  "tracing",

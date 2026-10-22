@@ -2,12 +2,15 @@
 //! single-threaded GUI. The task owns the `Session`/`Channel` and exchanges
 //! raw bytes and commands with the UI over unbounded channels; the UI owns
 //! the core [`Terminal`] and feeds it the bytes it receives.
+//!
+//! [`Terminal`]: vortexssh_core::term::Terminal
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{mpsc as std_mpsc, Arc};
 
-use vortexssh_core::config::AuthMethod;
-use vortexssh_core::ssh::{AuthCredentials, ChannelMsg, HostKeyVerifier, Session};
+use tokio::sync::mpsc;
+use vortexssh_core::prompt::{KiPrompt, Prompter};
+use vortexssh_core::ssh::{ChannelMsg, KnownHosts, Session};
+use vortexssh_core::target::Target;
 
 /// A command from the UI thread to the SSH task.
 pub enum Cmd {
@@ -19,95 +22,125 @@ pub enum Cmd {
 
 /// An event from the SSH task to the UI thread.
 pub enum Evt {
+    /// The connect task needs an answer from the user.
+    Ask(Question),
     /// The shell channel is open; terminal rendering can begin.
     Ready,
     /// Output from the shell (stdout/stderr merged).
     Data(Vec<u8>),
-    /// The channel closed or errored.
+    /// The connection failed or the channel closed.
     Closed(String),
 }
 
-/// The four channel ends connecting the UI and the SSH task.
-pub struct Channels {
-    pub cmd_tx: tokio::sync::mpsc::UnboundedSender<Cmd>,
-    pub cmd_rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
-    pub evt_tx: tokio::sync::mpsc::UnboundedSender<Evt>,
-    pub evt_rx: tokio::sync::mpsc::UnboundedReceiver<Evt>,
+/// A question from the connect task. The task blocks until `reply` is
+/// answered (or dropped, which counts as cancel/reject).
+pub enum Question {
+    Secret {
+        prompt: String,
+        reply: std_mpsc::Sender<Option<String>>,
+    },
+    HostKey {
+        host: String,
+        port: u16,
+        fingerprint: String,
+        reply: std_mpsc::Sender<bool>,
+    },
+    KeyboardInteractive {
+        name: String,
+        instructions: String,
+        prompts: Vec<KiPrompt>,
+        reply: std_mpsc::Sender<Option<Vec<String>>>,
+    },
 }
 
-impl Channels {
-    pub fn new() -> Self {
-        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (evt_tx, evt_rx) = tokio::sync::mpsc::unbounded_channel();
-        Self {
-            cmd_tx,
-            cmd_rx,
-            evt_tx,
-            evt_rx,
-        }
+/// Turns prompter calls into [`Question`]s for the UI.
+struct GuiPrompter {
+    evt_tx: mpsc::UnboundedSender<Evt>,
+    notify: egui::Context,
+}
+
+impl GuiPrompter {
+    fn ask<T>(&self, make: impl FnOnce(std_mpsc::Sender<T>) -> Question) -> Option<T> {
+        let (tx, rx) = std_mpsc::channel();
+        self.evt_tx.send(Evt::Ask(make(tx))).ok()?;
+        self.notify.request_repaint();
+        rx.recv().ok()
     }
 }
 
-/// Connection parameters + secrets needed to open a session.
-#[derive(Clone)]
-pub struct ConnectSpec {
-    pub host: String,
-    pub port: u16,
-    pub user: String,
-    pub auth: AuthMethod,
-    pub term_type: String,
+impl Prompter for GuiPrompter {
+    fn secret(&self, prompt: &str) -> Option<String> {
+        self.ask(|reply| Question::Secret {
+            prompt: prompt.to_string(),
+            reply,
+        })
+        .flatten()
+    }
+
+    fn confirm_host_key(&self, host: &str, port: u16, fingerprint: &str) -> bool {
+        self.ask(|reply| Question::HostKey {
+            host: host.to_string(),
+            port,
+            fingerprint: fingerprint.to_string(),
+            reply,
+        })
+        .unwrap_or(false)
+    }
+
+    fn keyboard_interactive(
+        &self,
+        name: &str,
+        instructions: &str,
+        prompts: &[KiPrompt],
+    ) -> Option<Vec<String>> {
+        self.ask(|reply| Question::KeyboardInteractive {
+            name: name.to_string(),
+            instructions: instructions.to_string(),
+            prompts: prompts.to_vec(),
+            reply,
+        })
+        .flatten()
+    }
 }
 
-/// Connects and authenticates, opens a shell, then drives it until it closes
-/// or the command channel is dropped. `password`/`passphrase` are the secrets
-/// the UI already collected. `notify` wakes the UI when output arrives.
+/// Connects and authenticates (asking the UI for anything it needs), opens
+/// a shell, then drives it until it closes or the UI drops its sender.
 pub async fn connect_and_run(
-    spec: ConnectSpec,
-    password: Option<String>,
-    passphrase: Option<String>,
-    verifier: Arc<dyn HostKeyVerifier>,
-    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Evt>,
+    target: Target,
+    term_type: String,
+    cmd_rx: mpsc::UnboundedReceiver<Cmd>,
+    evt_tx: mpsc::UnboundedSender<Evt>,
     notify: egui::Context,
 ) {
-    let credentials = match &spec.auth {
-        AuthMethod::Password | AuthMethod::KeyboardInteractive => {
-            AuthCredentials::Password(password.unwrap_or_default())
-        }
-        AuthMethod::PublicKey { key_path, .. } => AuthCredentials::PublicKey {
-            key_path: PathBuf::from(key_path),
-            passphrase,
-        },
-        AuthMethod::Agent => AuthCredentials::Agent,
-    };
-
-    let session = match Session::connect(
-        (spec.host.as_str(), spec.port),
-        &spec.host,
-        spec.port,
-        &spec.user,
-        credentials,
-        verifier,
+    let prompter = Arc::new(GuiPrompter {
+        evt_tx: evt_tx.clone(),
+        notify: notify.clone(),
+    });
+    let result = Session::connect(
+        &target.host,
+        target.port,
+        &target.user,
+        &target.auth,
+        prompter.clone(),
+        Arc::new(KnownHosts { prompter }),
     )
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = evt_tx.send(Evt::Closed(format!("connecting: {e}")));
-            notify.request_repaint();
-            return;
-        }
-    };
+    .await;
 
-    run_connected(session, cmd_rx, evt_tx, notify, &spec.term_type).await;
+    match result {
+        Ok(session) => run_connected(session, cmd_rx, &evt_tx, &notify, &term_type).await,
+        Err(e) => {
+            let _ = evt_tx.send(Evt::Closed(e.to_string()));
+            notify.request_repaint();
+        }
+    }
 }
 
 /// Drives an already-connected session's shell channel.
 async fn run_connected(
     mut session: Session,
-    mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Evt>,
-    notify: egui::Context,
+    mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
+    evt_tx: &mpsc::UnboundedSender<Evt>,
+    notify: &egui::Context,
     term_type: &str,
 ) {
     // The real size arrives as a WindowChange once the UI measures itself.

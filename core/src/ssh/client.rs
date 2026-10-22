@@ -2,9 +2,12 @@ use russh::client::Msg;
 use russh::keys::known_hosts::learn_known_hosts;
 use russh::keys::{check_known_hosts, HashAlg, PublicKeyOrCertificate};
 use russh::Channel;
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 
 use crate::error::{Error, Result};
+use crate::prompt::Prompter;
 
 /// Pluggable host key verification, checked once per connection before any
 /// authentication happens.
@@ -26,29 +29,27 @@ impl HostKeyVerifier for AcceptAll {
     }
 }
 
-/// Interactive confirmation callback: `(host, port, sha256_fingerprint) -> accept?`.
-pub type HostKeyPrompt = Box<dyn Fn(&str, u16, &str) -> bool + Send + Sync>;
-
 /// Trust-on-first-use verifier backed by the standard OpenSSH `known_hosts`
-/// file. Unknown keys are handed to `prompt` (host, port, SHA256
-/// fingerprint) for interactive confirmation; accepted keys are persisted.
-/// A *changed* key (potential MITM) is always rejected without prompting.
+/// file. Unknown keys are confirmed through the prompter and then saved; a
+/// *changed* key (potential MITM) is always rejected without asking.
 pub struct KnownHosts {
-    pub prompt: HostKeyPrompt,
+    pub prompter: Arc<dyn Prompter>,
 }
 
 impl HostKeyVerifier for KnownHosts {
     fn verify(&self, host: &str, port: u16, key: &PublicKeyOrCertificate) -> Result<bool> {
         let PublicKeyOrCertificate::PublicKey { key: pubkey, .. } = key else {
-            // OpenSSH certificate-based host auth isn't handled yet.
-            return Ok(false);
+            return Err(Error::HostKeyVerification {
+                host: host.to_string(),
+                reason: "the server presented a host certificate, which is not supported".into(),
+            });
         };
 
         match check_known_hosts(host, port, pubkey) {
             Ok(true) => Ok(true),
             Ok(false) => {
                 let fingerprint = pubkey.fingerprint(HashAlg::Sha256).to_string();
-                if (self.prompt)(host, port, &fingerprint) {
+                if self.prompter.confirm_host_key(host, port, &fingerprint) {
                     learn_known_hosts(host, port, pubkey)
                         .map_err(|e| Error::Other(format!("saving known_hosts entry: {e}")))?;
                     Ok(true)
@@ -80,8 +81,11 @@ pub enum ServerEvent {
 pub struct ClientHandler {
     pub(crate) host: String,
     pub(crate) port: u16,
-    pub(crate) verifier: std::sync::Arc<dyn HostKeyVerifier>,
+    pub(crate) verifier: Arc<dyn HostKeyVerifier>,
     pub(crate) events: mpsc::UnboundedSender<ServerEvent>,
+    /// Why the host key was rejected, so `connect` can report it instead of
+    /// russh's generic error.
+    pub(crate) rejection: Arc<std::sync::Mutex<Option<Error>>>,
 }
 
 impl russh::client::Handler for ClientHandler {
@@ -91,13 +95,16 @@ impl russh::client::Handler for ClientHandler {
         &mut self,
         server_public_key: &PublicKeyOrCertificate,
     ) -> std::result::Result<bool, Self::Error> {
-        match self
-            .verifier
-            .verify(&self.host, self.port, server_public_key)
-        {
+        // Verification may block on a user prompt, so keep it off the
+        // async executor.
+        let outcome = tokio::task::block_in_place(|| {
+            self.verifier.verify(&self.host, self.port, server_public_key)
+        });
+        match outcome {
             Ok(ok) => Ok(ok),
             Err(e) => {
-                tracing::error!("host key verification failed: {e}");
+                tracing::error!("{e}");
+                *self.rejection.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
                 Ok(false)
             }
         }

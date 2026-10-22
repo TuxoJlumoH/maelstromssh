@@ -10,8 +10,9 @@
 
 use std::sync::Arc;
 
-use vortexssh_core::config::{ForwardKind, ForwardRule};
-use vortexssh_core::ssh::{AcceptAll, AuthCredentials, Session};
+use vortexssh_core::config::{AuthMethod, ForwardKind, ForwardRule};
+use vortexssh_core::prompt::NoPrompt;
+use vortexssh_core::ssh::{AcceptAll, Session};
 use vortexssh_core::tunnel;
 
 #[tokio::main]
@@ -25,14 +26,11 @@ async fn main() -> anyhow::Result<()> {
         .expect("usage: forward_smoke <host> <port> <user> <key_path>");
 
     let mut session = Session::connect(
-        (host.as_str(), port),
         &host,
         port,
         &user,
-        AuthCredentials::PublicKey {
-            key_path: key_path.into(),
-            passphrase: None,
-        },
+        &AuthMethod::PublicKey { key_path },
+        Arc::new(NoPrompt),
         Arc::new(AcceptAll), // fine for a throwaway local test sshd only
     )
     .await?;

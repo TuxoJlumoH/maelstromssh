@@ -4,13 +4,14 @@
 //! cargo run -p vortexssh-core --example sftp_smoke -- 127.0.0.1 2222 <user> <key_path>
 //! ```
 //!
-//! Not run in CI (no local sshd available there) — see Phase 0 notes for a
-//! throwaway sshd setup used to validate this manually.
+//! Not run in CI (no local sshd available there).
 
 use std::sync::Arc;
 
 use vortexssh_core::sftp;
-use vortexssh_core::ssh::{AcceptAll, AuthCredentials, Session};
+use vortexssh_core::config::AuthMethod;
+use vortexssh_core::prompt::NoPrompt;
+use vortexssh_core::ssh::{AcceptAll, Session};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,14 +24,11 @@ async fn main() -> anyhow::Result<()> {
         .expect("usage: sftp_smoke <host> <port> <user> <key_path>");
 
     let mut session = Session::connect(
-        (host.as_str(), port),
         &host,
         port,
         &user,
-        AuthCredentials::PublicKey {
-            key_path: key_path.into(),
-            passphrase: None,
-        },
+        &AuthMethod::PublicKey { key_path },
+        Arc::new(NoPrompt),
         Arc::new(AcceptAll), // fine for a throwaway local test sshd only
     )
     .await?;

@@ -22,22 +22,9 @@ use tokio_stream::StreamExt;
 use crate::input::{encode_key, encode_sgr_mouse, scroll_action, ScrollAction};
 use crate::render::{GridView, StatusBar};
 
-/// Connection label shown in the status bar.
-pub struct Endpoint {
-    pub user: String,
-    pub host: String,
-    pub port: u16,
-}
-
-impl Endpoint {
-    fn label(&self) -> String {
-        format!("{}@{}:{}", self.user, self.host, self.port)
-    }
-}
-
 /// Runs the interactive session. Returns when the remote closes the channel,
 /// the user quits (Ctrl+]), or an error occurs. Always restores the terminal.
-pub async fn run(mut channel: Channel<Msg>, mut term: Terminal, endpoint: Endpoint) -> Result<()> {
+pub async fn run(mut channel: Channel<Msg>, mut term: Terminal, endpoint: String) -> Result<()> {
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, event::EnableMouseCapture)?;
     enable_raw_mode()?;
@@ -67,7 +54,7 @@ async fn event_loop(
     terminal: &mut RatuiTerminal<CrosstermBackend<std::io::Stdout>>,
     term: &mut Terminal,
     channel: &mut Channel<Msg>,
-    endpoint: &Endpoint,
+    endpoint: &str,
 ) -> Result<()> {
     let mut events = EventStream::new();
     let mut redraw = tokio::time::interval(Duration::from_millis(33));
@@ -215,10 +202,10 @@ async fn send_responses(term: &mut Terminal, channel: &mut Channel<Msg>) {
 fn draw_frame(
     terminal: &mut RatuiTerminal<CrosstermBackend<std::io::Stdout>>,
     term: &Terminal,
-    endpoint: &Endpoint,
+    endpoint: &str,
     connected: bool,
 ) -> Result<()> {
-    let label = term.title().map(str::to_string).unwrap_or_else(|| endpoint.label());
+    let label = term.title().map(str::to_string).unwrap_or_else(|| endpoint.to_string());
     let offset = term.viewport_offset();
     let right = if !connected {
         "closed — press any key to exit".to_string()

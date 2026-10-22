@@ -5,8 +5,10 @@
 pub mod config;
 pub mod error;
 pub mod keys;
+pub mod prompt;
 pub mod sftp;
 pub mod ssh;
+pub mod target;
 pub mod term;
 pub mod tunnel;
 

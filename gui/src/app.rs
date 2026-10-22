@@ -1,63 +1,95 @@
-//! The egui application: owns the core [`Terminal`], drives authentication
-//! dialogs (password/passphrase/host-key), and paints the grid + status bar.
-//! The SSH session lives on a background tokio task (see [`crate::ssh`]);
-//! this module is purely single-threaded.
+//! The egui application: owns the core [`Terminal`], answers the connect
+//! task's questions (password, passphrase, host key, 2FA) in dialogs, and
+//! paints the grid + status bar. The SSH session lives on a background tokio
+//! task (see [`crate::ssh`]); this module is purely single-threaded.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Stroke};
-use vortexssh_core::config::AuthMethod;
-use vortexssh_core::ssh::HostKeyVerifier;
+use tokio::sync::mpsc;
+use vortexssh_core::prompt::KiPrompt;
+use vortexssh_core::target::Target;
 use vortexssh_core::term::Terminal;
 
 use crate::keys::{self, KeyOut};
 use crate::paint::{self, Palette};
-use crate::ssh::{self, Cmd, ConnectSpec, Evt};
+use crate::ssh::{self, Cmd, Evt, Question};
 
-/// A host-key confirmation passed from the background connect task to the UI.
-pub struct HostKeyQuestion {
-    pub host: String,
-    pub port: u16,
-    pub fingerprint: String,
-    pub reply: std::sync::mpsc::Sender<bool>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Phase {
-    Prompt,
-    Connecting,
-    HostKey,
-    Running,
-    Failed,
-}
+const ERROR_RED: Color32 = Color32::from_rgb(240, 80, 80);
 
 enum State {
-    Prompt {
-        password: String,
-        passphrase: String,
-        error: Option<String>,
-    },
     Connecting,
+    Secret {
+        prompt: String,
+        input: String,
+        reply: std::sync::mpsc::Sender<Option<String>>,
+    },
     HostKey {
         host: String,
         port: u16,
         fingerprint: String,
         reply: std::sync::mpsc::Sender<bool>,
     },
+    KeyboardInteractive {
+        name: String,
+        instructions: String,
+        prompts: Vec<KiPrompt>,
+        answers: Vec<String>,
+        reply: std::sync::mpsc::Sender<Option<Vec<String>>>,
+    },
     Running,
     Failed(String),
 }
 
+impl State {
+    fn from_question(q: Question) -> Self {
+        match q {
+            Question::Secret { prompt, reply } => State::Secret {
+                prompt,
+                input: String::new(),
+                reply,
+            },
+            Question::HostKey {
+                host,
+                port,
+                fingerprint,
+                reply,
+            } => State::HostKey {
+                host,
+                port,
+                fingerprint,
+                reply,
+            },
+            Question::KeyboardInteractive {
+                name,
+                instructions,
+                prompts,
+                reply,
+            } => State::KeyboardInteractive {
+                answers: vec![String::new(); prompts.len()],
+                name,
+                instructions,
+                prompts,
+                reply,
+            },
+        }
+    }
+}
+
+/// What a dialog decided this frame.
+enum Outcome {
+    Pending,
+    Answered,
+    Retry,
+    Quit,
+}
+
 pub struct GuiApp {
-    spec: ConnectSpec,
+    target: Target,
+    term_type: String,
     handle: tokio::runtime::Handle,
-    verifier: Arc<dyn HostKeyVerifier>,
-    question_rx: std::sync::mpsc::Receiver<HostKeyQuestion>,
-    evt_rx: tokio::sync::mpsc::UnboundedReceiver<Evt>,
-    cmd_tx: tokio::sync::mpsc::UnboundedSender<Cmd>,
-    cmd_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Cmd>>,
-    evt_tx: Option<tokio::sync::mpsc::UnboundedSender<Evt>>,
+    cmd_tx: Option<mpsc::UnboundedSender<Cmd>>,
+    evt_rx: Option<mpsc::UnboundedReceiver<Evt>>,
 
     state: State,
 
@@ -78,39 +110,14 @@ pub struct GuiApp {
 }
 
 impl GuiApp {
-    pub fn new(
-        spec: ConnectSpec,
-        handle: tokio::runtime::Handle,
-        verifier: Arc<dyn HostKeyVerifier>,
-        question_rx: std::sync::mpsc::Receiver<HostKeyQuestion>,
-        channels: ssh::Channels,
-    ) -> Self {
-        let ssh::Channels {
-            cmd_tx,
-            cmd_rx,
-            evt_tx,
-            evt_rx,
-        } = channels;
-        let (needs_password, needs_passphrase) = auth_prompts(&spec.auth);
-        let state = if needs_password || needs_passphrase {
-            State::Prompt {
-                password: String::new(),
-                passphrase: String::new(),
-                error: None,
-            }
-        } else {
-            State::Connecting // agent: auto-connect on first logic()
-        };
+    pub fn new(target: Target, term_type: String, handle: tokio::runtime::Handle) -> Self {
         Self {
-            spec,
+            target,
+            term_type,
             handle,
-            verifier,
-            question_rx,
-            evt_rx,
-            cmd_tx,
-            cmd_rx: Some(cmd_rx),
-            evt_tx: Some(evt_tx),
-            state,
+            cmd_tx: None,
+            evt_rx: None,
+            state: State::Connecting,
             term: Terminal::new(80, 24),
             cols: 80,
             rows: 24,
@@ -126,77 +133,48 @@ impl GuiApp {
         }
     }
 
-    fn phase(&self) -> Phase {
-        match &self.state {
-            State::Prompt { .. } => Phase::Prompt,
-            State::Connecting => Phase::Connecting,
-            State::HostKey { .. } => Phase::HostKey,
-            State::Running => Phase::Running,
-            State::Failed(_) => Phase::Failed,
-        }
-    }
-
-    fn label(&self) -> String {
-        format!("{}@{}:{}", self.spec.user, self.spec.host, self.spec.port)
-    }
-
-    fn start_connect(
-        &mut self,
-        ctx: &egui::Context,
-        password: Option<String>,
-        passphrase: Option<String>,
-    ) {
-        let (Some(cmd_rx), Some(evt_tx)) = (self.cmd_rx.take(), self.evt_tx.take()) else {
-            return;
-        };
-        let handle = self.handle.clone();
-        let spec = self.spec.clone();
-        let verifier = self.verifier.clone();
-        let notify = ctx.clone();
-        handle.spawn(ssh::connect_and_run(
-            spec,
-            password,
-            passphrase,
-            verifier,
+    /// Spawns a fresh connect task with its own channels.
+    fn start_connect(&mut self, ctx: &egui::Context) {
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (evt_tx, evt_rx) = mpsc::unbounded_channel();
+        self.handle.spawn(ssh::connect_and_run(
+            self.target.clone(),
+            self.term_type.clone(),
             cmd_rx,
             evt_tx,
-            notify,
+            ctx.clone(),
         ));
+        self.cmd_tx = Some(cmd_tx);
+        self.evt_rx = Some(evt_rx);
+        self.term = Terminal::new(self.cols, self.rows);
         self.state = State::Connecting;
     }
 }
 
 impl eframe::App for GuiApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Auto-connect for methods that need no prompt (ssh-agent).
-        if self.phase() == Phase::Connecting && self.cmd_rx.is_some() {
-            self.start_connect(ctx, None, None);
+        if self.evt_rx.is_none() {
+            self.start_connect(ctx);
         }
 
-        // Host-key question from the background connect task.
-        if let Ok(q) = self.question_rx.try_recv() {
-            self.state = State::HostKey {
-                host: q.host,
-                port: q.port,
-                fingerprint: q.fingerprint,
-                reply: q.reply,
-            };
-        }
-
-        // Drain SSH output into the emulator, forwarding any responses back.
+        // Drain SSH events, feeding output into the emulator and sending any
+        // terminal responses (cursor reports etc.) back.
         let mut responses: Vec<u8> = Vec::new();
-        while let Ok(evt) = self.evt_rx.try_recv() {
-            match evt {
-                Evt::Ready => self.state = State::Running,
-                Evt::Data(data) => {
-                    self.term.feed(&data);
-                    responses.extend(self.term.take_responses());
+        if let Some(rx) = self.evt_rx.as_mut() {
+            while let Ok(evt) = rx.try_recv() {
+                match evt {
+                    Evt::Ask(q) => self.state = State::from_question(q),
+                    Evt::Ready => self.state = State::Running,
+                    Evt::Data(data) => {
+                        self.term.feed(&data);
+                        responses.extend(self.term.take_responses());
+                    }
+                    Evt::Closed(msg) => self.state = State::Failed(msg),
                 }
-                Evt::Closed(msg) => self.state = State::Failed(msg),
             }
         }
         if !responses.is_empty() {
-            let _ = self.cmd_tx.send(Cmd::Data(responses));
+            self.send_data(responses);
         }
 
         // Steady redraw for cursor blink; the SSH task also pokes repaint.
@@ -204,12 +182,10 @@ impl eframe::App for GuiApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        match self.phase() {
-            Phase::Prompt => self.ui_prompt(ui),
-            Phase::Connecting => self.ui_connecting(ui),
-            Phase::HostKey => self.ui_hostkey(ui),
-            Phase::Running => self.ui_running(ui),
-            Phase::Failed => self.ui_failed(ui),
+        if matches!(self.state, State::Running) {
+            self.ui_running(ui);
+        } else {
+            self.ui_dialog(ui);
         }
 
         if self.quit {
@@ -219,128 +195,105 @@ impl eframe::App for GuiApp {
 }
 
 impl GuiApp {
-    fn ui_prompt(&mut self, ui: &mut egui::Ui) {
-        let (needs_password, needs_passphrase) = auth_prompts(&self.spec.auth);
-        let mut password = String::new();
-        let mut passphrase = String::new();
-        let mut error = None;
-        if let State::Prompt {
-            password: p,
-            passphrase: pp,
-            error: e,
-        } = std::mem::replace(&mut self.state, State::Connecting)
-        {
-            password = p;
-            passphrase = pp;
-            error = e;
-        }
+    /// Renders whichever pre-session screen the state calls for. The state is
+    /// taken out for the frame and put back unless the dialog was answered.
+    fn ui_dialog(&mut self, ui: &mut egui::Ui) {
+        let mut state = std::mem::replace(&mut self.state, State::Connecting);
+        let label = self.target.label();
+        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
 
         ui.heading("VortexSSH");
-        ui.label(format!("Connecting to {}", self.label()));
+        ui.label(format!("Connecting to {label}"));
         ui.add_space(8.0);
 
-        let mut connect = false;
-        if needs_password {
-            ui.add(
-                egui::TextEdit::singleline(&mut password)
-                    .password(true)
-                    .hint_text("password"),
-            );
-        }
-        if needs_passphrase {
-            ui.add(
-                egui::TextEdit::singleline(&mut passphrase)
-                    .password(true)
-                    .hint_text("passphrase (blank if none)"),
-            );
-        }
-        if let Some(e) = &error {
-            ui.colored_label(Color32::from_rgb(240, 80, 80), e);
-        }
-
-        ui.horizontal(|ui| {
-            if ui.button("Connect").clicked() {
-                connect = true;
+        let outcome = match &mut state {
+            State::Connecting => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Connecting…");
+                });
+                Outcome::Pending
             }
-            if ui.button("Cancel").clicked() {
-                self.quit = true;
+            State::Secret { prompt, input, .. } => {
+                ui.label(prompt.trim_end_matches([':', ' ']));
+                ui.add(egui::TextEdit::singleline(input).password(true))
+                    .request_focus();
+                submit_buttons(ui, enter)
             }
-        });
-
-        if connect {
-            self.start_connect(
-                ui.ctx(),
-                needs_password.then_some(password),
-                needs_passphrase.then_some(passphrase).filter(|s| !s.is_empty()),
-            );
-        } else {
-            self.state = State::Prompt {
-                password,
-                passphrase,
-                error: None,
-            };
-        }
-    }
-
-    fn ui_connecting(&self, ui: &mut egui::Ui) {
-        ui.centered_and_justified(|ui| {
-            ui.spinner();
-            ui.label(format!("Connecting to {}…", self.label()));
-        });
-    }
-
-    fn ui_hostkey(&mut self, ui: &mut egui::Ui) {
-        let (host, port, fingerprint) = match &self.state {
+            State::KeyboardInteractive {
+                name,
+                instructions,
+                prompts,
+                answers,
+                ..
+            } => {
+                if !name.is_empty() {
+                    ui.strong(name.as_str());
+                }
+                if !instructions.is_empty() {
+                    ui.label(instructions.as_str());
+                }
+                for (i, (p, answer)) in prompts.iter().zip(answers.iter_mut()).enumerate() {
+                    ui.label(p.text.trim_end_matches([':', ' ']));
+                    let field = ui.add(egui::TextEdit::singleline(answer).password(!p.echo));
+                    if i == 0 && !ui.memory(|m| m.focused().is_some()) {
+                        field.request_focus();
+                    }
+                }
+                submit_buttons(ui, enter)
+            }
             State::HostKey {
                 host,
                 port,
                 fingerprint,
                 ..
-            } => (host.clone(), *port, fingerprint.clone()),
-            _ => return,
+            } => {
+                ui.strong("Unknown host key");
+                ui.label(format!("The authenticity of '{host}:{port}' can't be established."));
+                ui.monospace(fingerprint.as_str());
+                ui.label("Only accept if this matches the fingerprint you expect.");
+                ui.add_space(8.0);
+                let mut out = Outcome::Pending;
+                ui.horizontal(|ui| {
+                    if ui.button("Accept").clicked() {
+                        out = Outcome::Answered;
+                    }
+                    if ui.button("Reject").clicked() {
+                        out = Outcome::Quit;
+                    }
+                });
+                out
+            }
+            State::Failed(msg) => {
+                ui.colored_label(ERROR_RED, format!("Connection failed: {msg}"));
+                ui.add_space(8.0);
+                let mut out = Outcome::Pending;
+                ui.horizontal(|ui| {
+                    if ui.button("Retry").clicked() {
+                        out = Outcome::Retry;
+                    }
+                    if ui.button("Quit").clicked() {
+                        out = Outcome::Quit;
+                    }
+                });
+                out
+            }
+            State::Running => Outcome::Pending,
         };
 
-        ui.heading("Unknown host key");
-        ui.label(format!("The authenticity of host '{host}:{port}' can't be established."));
-        ui.label(format!("Key fingerprint: {fingerprint}"));
-        ui.add_space(8.0);
-
-        let mut answer = None;
-        ui.horizontal(|ui| {
-            if ui.button("Accept").clicked() {
-                answer = Some(true);
-            }
-            if ui.button("Reject").clicked() {
-                answer = Some(false);
-            }
-        });
-
-        if let Some(a) = answer {
-            if let State::HostKey { reply, .. } = std::mem::replace(&mut self.state, State::Connecting) {
-                let _ = reply.send(a);
-            }
-        }
-    }
-
-    fn ui_failed(&mut self, ui: &mut egui::Ui) {
-        let msg = match &self.state {
-            State::Failed(m) => m.clone(),
-            _ => String::new(),
-        };
-        ui.heading("Connection failed");
-        ui.colored_label(Color32::from_rgb(240, 80, 80), &msg);
-        if ui.button("Back").clicked() {
-            let (needs_password, needs_passphrase) = auth_prompts(&self.spec.auth);
-            self.state = if needs_password || needs_passphrase {
-                State::Prompt {
-                    password: String::new(),
-                    passphrase: String::new(),
-                    error: Some(msg),
+        match outcome {
+            Outcome::Pending => self.state = state,
+            Outcome::Answered => answer(state, true),
+            Outcome::Quit => {
+                let failed = matches!(state, State::Failed(_));
+                answer(state, false);
+                // Rejecting a prompt cancels the connection; the task then
+                // reports the failure. Quitting from the failure screen exits.
+                if failed {
+                    self.quit = true;
                 }
-            } else {
-                // agent: restart immediately
-                State::Connecting
-            };
+            }
+            Outcome::Retry => self.start_connect(ui.ctx()),
         }
     }
 
@@ -362,7 +315,9 @@ impl GuiApp {
             self.cols = cols;
             self.rows = rows;
             self.term.resize(cols, rows);
-            let _ = self.cmd_tx.send(Cmd::WindowChange { cols, rows });
+            if let Some(tx) = &self.cmd_tx {
+                let _ = tx.send(Cmd::WindowChange { cols, rows });
+            }
         }
         self.grid_rect = grid_rect;
         self.char_w = cw;
@@ -433,7 +388,9 @@ impl GuiApp {
     }
 
     fn send_data(&self, bytes: Vec<u8>) {
-        let _ = self.cmd_tx.send(Cmd::Data(bytes));
+        if let Some(tx) = &self.cmd_tx {
+            let _ = tx.send(Cmd::Data(bytes));
+        }
     }
 
     fn handle_wheel(&mut self, delta: egui::Vec2) {
@@ -572,7 +529,7 @@ impl GuiApp {
             .term
             .title()
             .map(str::to_string)
-            .unwrap_or_else(|| self.label());
+            .unwrap_or_else(|| self.target.label());
         let status = if self.term.viewport_offset() > 0 {
             format!("{label}    ↑ {} lines", self.term.viewport_offset())
         } else {
@@ -588,38 +545,34 @@ impl GuiApp {
     }
 }
 
-/// Which secrets a given auth method needs the user to supply.
-pub fn auth_prompts(auth: &AuthMethod) -> (bool, bool) {
-    match auth {
-        AuthMethod::Password | AuthMethod::KeyboardInteractive => (true, false),
-        AuthMethod::PublicKey { .. } => (false, true),
-        AuthMethod::Agent => (false, false),
-    }
+/// OK/Cancel row for text prompts. Enter submits.
+fn submit_buttons(ui: &mut egui::Ui, enter: bool) -> Outcome {
+    let mut out = if enter { Outcome::Answered } else { Outcome::Pending };
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        if ui.button("OK").clicked() {
+            out = Outcome::Answered;
+        }
+        if ui.button("Cancel").clicked() {
+            out = Outcome::Quit;
+        }
+    });
+    out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prompts_for_password_methods() {
-        assert_eq!(auth_prompts(&AuthMethod::Password), (true, false));
-        assert_eq!(
-            auth_prompts(&AuthMethod::KeyboardInteractive),
-            (true, false)
-        );
-    }
-
-    #[test]
-    fn prompts_for_passphrase_only_for_keys() {
-        let key = AuthMethod::PublicKey {
-            key_path: "id_ed25519".into(),
-        };
-        assert_eq!(auth_prompts(&key), (false, true));
-    }
-
-    #[test]
-    fn no_prompt_for_agent() {
-        assert_eq!(auth_prompts(&AuthMethod::Agent), (false, false));
+/// Sends the dialog's answer back to the waiting connect task. `accept =
+/// false` means cancel/reject.
+fn answer(state: State, accept: bool) {
+    match state {
+        State::Secret { input, reply, .. } => {
+            let _ = reply.send(accept.then_some(input));
+        }
+        State::HostKey { reply, .. } => {
+            let _ = reply.send(accept);
+        }
+        State::KeyboardInteractive { answers, reply, .. } => {
+            let _ = reply.send(accept.then_some(answers));
+        }
+        State::Connecting | State::Running | State::Failed(_) => {}
     }
 }

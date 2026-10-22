@@ -29,16 +29,17 @@ connection; a profile stores it for reuse.
 
 | `--auth` value | Meaning |
 |---|---|
-| `password` | Prompt for a password (never stored in a profile). |
+| `password` | Prompt for a password (never stored in a profile). Up to 3 attempts. |
 | `key` | Public-key auth; needs `-i/--identity <PATH>` (OpenSSH format). Prompts for a passphrase if the key is encrypted. |
 | `agent` | Delegate to a running `ssh-agent` (via `$SSH_AUTH_SOCK`); every identity is tried. |
-| `keyboard-interactive` | Currently degrades to a password prompt; full 2FA prompts are planned. |
+| `keyboard-interactive` | Server-driven prompts, e.g. password followed by a 2FA/OTP code. |
 
 The **default** is `password`, or `key` when `-i/--identity` is given without an
 explicit `--auth`.
 
 Host keys are verified against `~/.ssh/known_hosts` (trust-on-first-use with a
-confirmation prompt; a *changed* key is always rejected).
+confirmation prompt; a *changed* key is always rejected). Host certificates
+are not supported yet and are rejected with an explanation.
 
 ---
 
@@ -180,7 +181,7 @@ scrolls back; window resize resizes the remote PTY.
 ## 5. GUI — `vortexssh-gui`
 
 Graphical window (`egui`/`eframe`). Same flags as the TUI. Authentication
-(password/passphrase prompts and host-key confirmation) happens **inside the
+(password/passphrase/2FA prompts and host-key confirmation) happens **inside the
 window**, so it can be launched from a desktop menu without a terminal.
 
 ```
@@ -252,16 +253,22 @@ The engine every front-end uses. No UI/rendering code lives here.
 - `HashAlg::{ Sha256, ... }` (re-exported)
 - `keys::agent` — `connect_env()`, `list_identities(agent)` for `ssh-agent` (`$SSH_AUTH_SOCK`)
 
+### `target` / `prompt` — shared front-end plumbing
+
+- `TargetArgs { target, port, identity, profile, auth }` (`clap::Args` with the
+  `clap` feature) → `resolve() -> Target { host, port, user, auth, forwards }`
+- `Prompter` trait — `secret`, `confirm_host_key`, `keyboard_interactive`;
+  `TtyPrompter` (terminal, `tty` feature) and `NoPrompt`
+
 ### `ssh` — transport & sessions
 
-- `Session::connect(addr, host_label, port, user, auth, verifier) -> Session`
+- `Session::connect(host, port, user, &AuthMethod, prompter, verifier) -> Session`
 - `Session::open_shell(term_type, cols, rows) -> Channel` (PTY + shell)
 - `Session::open_exec(command) -> Channel` (one-shot, no PTY)
 - `Session::open_subsystem(name) -> Channel` (e.g. `"sftp"`)
 - `Session::disconnect()`
-- `AuthCredentials::{ Password(String), PublicKey{key_path, passphrase}, Agent }`
 - `HostKeyVerifier` trait — `verify(&self, host, port, key) -> Result<bool>`
-- `KnownHosts { prompt }` (TOFU + known_hosts), `AcceptAll` (tests only)
+- `KnownHosts { prompter }` (TOFU + known_hosts), `AcceptAll` (tests only)
 - `ServerEvent::{ ForwardedTcpIp{..} }`
 - Re-exports: `Channel`, `ChannelMsg`, `Msg` (so front-ends never touch `russh`)
 
@@ -315,15 +322,16 @@ forwarding tasks.
 ### `error`
 
 - `Result<T>` = `std::result::Result<T, Error>`
-- `Error::{ Ssh, Sftp, Key, RusshKey, AgentAuth, Io, Config, HostKeyVerification, AuthFailed, Other }`
+- `Error::{ Ssh, Sftp, Key, RusshKey, AgentAuth, Io, Config, HostKeyVerification, HostKeyRejected, AuthFailed, Cancelled, Other }`
 
 ---
 
 ## 8. Data flow (how the front-ends use the core)
 
 1. Resolve connection settings (CLI args or a `Profile`).
-2. Prompt for secrets / confirm the host key (on the terminal).
-3. `Session::connect(...)` → `open_shell(term_type, cols, rows)`.
+2. `Session::connect(...)`, which asks the front-end's `Prompter` for secrets,
+   2FA answers and host-key confirmation only when the server needs them.
+3. `open_shell(term_type, cols, rows)`.
 4. Loop: read `ChannelMsg::Data` → `Terminal::feed(&data)` → drain
    `take_responses()` → write back via `channel.data(...)`; send local input
    via `channel.data(...)`; forward resizes via `channel.window_change(...)`.

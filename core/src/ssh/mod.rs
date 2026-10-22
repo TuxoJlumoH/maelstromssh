@@ -6,7 +6,7 @@ mod client;
 mod session;
 
 pub use client::{AcceptAll, ClientHandler, HostKeyVerifier, KnownHosts, ServerEvent};
-pub use session::{AuthCredentials, ClientHandle, Session};
+pub use session::{ClientHandle, Session};
 
 pub use russh::client::Msg;
 /// Re-exported so callers can drive channel I/O (read `ChannelMsg`, send
