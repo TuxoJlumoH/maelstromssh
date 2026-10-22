@@ -1,7 +1,11 @@
 [package]
 name = "vortexssh-tui"
-version = "0.1.0"
-edition = "2021"
+description = "Full-screen terminal UI for the VortexSSH SSH client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [dependencies]
 vortexssh-core = { path = "../core", features = ["clap", "tty"] }
