@@ -39,6 +39,7 @@ Three binaries are produced:
 ```bash
 vortexssh connect user@host                       # agent, ~/.ssh keys, then password
 vortexssh connect -i ~/.ssh/id_ed25519 git@github.com
+vortexssh connect myalias                         # Host alias from ~/.ssh/config
 vortexssh connect -L 8080:localhost:80 user@host  # local forward
 vortexssh connect -D 1080 user@host               # SOCKS5 proxy
 vortexssh sftp user@host                          # interactive SFTP shell

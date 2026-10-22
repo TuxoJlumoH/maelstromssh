@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use crate::config::{AuthMethod, ForwardRule, ProfileStore};
+use crate::config::{AuthMethod, ForwardRule, HostConfig, ProfileStore, SshConfig};
 use crate::error::{Error, Result};
 
 /// A fully resolved connection target.
@@ -15,6 +15,9 @@ pub struct Target {
     pub user: String,
     pub auth: AuthMethod,
     pub forwards: Vec<ForwardRule>,
+    /// Things the user should know before connecting (e.g. ssh_config
+    /// settings that are ignored).
+    pub warnings: Vec<String>,
 }
 
 impl Target {
@@ -66,15 +69,16 @@ pub fn auth_from_flags(auth: Option<AuthChoice>, identity: Option<PathBuf>) -> R
     auth.unwrap_or(AuthChoice::Auto).into_method(identity)
 }
 
-/// Splits `user@host` into `(user, host)`; a bare host gets `$USER`.
-pub fn split_target(target: &str) -> (String, String) {
+/// Splits `user@host` into `(user, host)`; the user is `None` for a bare host.
+pub fn split_target(target: &str) -> (Option<String>, String) {
     match target.rsplit_once('@') {
-        Some((user, host)) => (user.to_string(), host.to_string()),
-        None => (local_user(), target.to_string()),
+        Some((user, host)) => (Some(user.to_string()), host.to_string()),
+        None => (None, target.to_string()),
     }
 }
 
-fn local_user() -> String {
+/// The local login name, the default remote user.
+pub fn local_user() -> String {
     std::env::var("USER").unwrap_or_else(|_| "root".to_string())
 }
 
@@ -82,7 +86,8 @@ fn local_user() -> String {
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "clap", derive(clap::Args))]
 pub struct TargetArgs {
-    /// user@host, or just host (defaults to $USER). Omit if using --profile.
+    /// user@host, or just host (defaults to $USER). Host aliases from
+    /// ~/.ssh/config work. Omit if using --profile.
     pub target: Option<String>,
     /// Port (default 22).
     #[cfg_attr(feature = "clap", arg(short = 'p', long))]
@@ -100,13 +105,21 @@ pub struct TargetArgs {
 }
 
 impl TargetArgs {
-    /// Resolves the flags against the default profile store.
+    /// Resolves the flags against the default profile store and
+    /// `~/.ssh/config` (plus `/etc/ssh/ssh_config`).
     pub fn resolve(self) -> Result<Target> {
         let store = ProfileStore::default_location()?;
-        self.resolve_with(&store)
+        let ssh_config = if self.profile.is_some() {
+            SshConfig::default()
+        } else {
+            SshConfig::load_default()?
+        };
+        self.resolve_with(&store, &ssh_config)
     }
 
-    pub fn resolve_with(self, store: &ProfileStore) -> Result<Target> {
+    /// Command-line flags win over `ssh_config`, which wins over defaults.
+    /// Saved profiles are used as they are; `ssh_config` does not apply.
+    pub fn resolve_with(self, store: &ProfileStore, ssh_config: &SshConfig) -> Result<Target> {
         if let Some(name) = self.profile {
             let p = store.load(&name)?;
             let auth = match self.auth {
@@ -122,6 +135,7 @@ impl TargetArgs {
                 user: p.user,
                 auth,
                 forwards: p.forwards,
+                warnings: Vec::new(),
             });
         }
 
@@ -132,13 +146,50 @@ impl TargetArgs {
         if host.is_empty() {
             return Err(Error::Config(format!("no host in '{target}'")));
         }
+        let config = ssh_config.lookup(&host, user.as_deref())?;
+        let auth = match self.identity {
+            Some(id) => auth_from_flags(self.auth, Some(id))?,
+            None => auth_with_config(self.auth, &config)?,
+        };
         Ok(Target {
-            host,
-            port: self.port.unwrap_or(22),
-            user,
-            auth: auth_from_flags(self.auth, self.identity)?,
+            host: config.hostname.unwrap_or(host),
+            port: self.port.or(config.port).unwrap_or(22),
+            user: user.or(config.user).unwrap_or_else(local_user),
+            auth,
             forwards: Vec::new(),
+            warnings: config
+                .unsupported
+                .iter()
+                .map(|k| format!("ignoring {k} (not supported by vortexssh)"))
+                .collect(),
         })
+    }
+}
+
+/// The auth method when no `-i` was given: `IdentityFile`s from
+/// ssh_config take its place. Like OpenSSH, ones that do not exist are
+/// skipped.
+fn auth_with_config(auth: Option<AuthChoice>, config: &HostConfig) -> Result<AuthMethod> {
+    let existing: Vec<String> = config
+        .identity_files
+        .iter()
+        .filter(|p| {
+            let exists = std::path::Path::new(p).exists();
+            if !exists {
+                tracing::debug!("ssh_config IdentityFile {p} does not exist, skipping");
+            }
+            exists
+        })
+        .cloned()
+        .collect();
+    match auth.unwrap_or(AuthChoice::Auto) {
+        AuthChoice::Auto => Ok(AuthMethod::Auto {
+            identities: existing,
+        }),
+        AuthChoice::Key => {
+            AuthChoice::Key.into_method(existing.into_iter().next().map(PathBuf::from))
+        }
+        choice => choice.into_method(None),
     }
 }
 
@@ -151,10 +202,9 @@ mod tests {
     fn splits_user_and_host() {
         assert_eq!(
             split_target("alice@example.com"),
-            ("alice".into(), "example.com".into())
+            (Some("alice".into()), "example.com".into())
         );
-        let (_, host) = split_target("example.com");
-        assert_eq!(host, "example.com");
+        assert_eq!(split_target("example.com"), (None, "example.com".into()));
     }
 
     #[test]
@@ -164,7 +214,7 @@ mod tests {
             identity: Some("/k".into()),
             ..Default::default()
         }
-        .resolve_with(&ProfileStore::new("/nonexistent"))
+        .resolve_with(&ProfileStore::new("/nonexistent"), &SshConfig::default())
         .unwrap();
         assert!(matches!(t.auth, AuthMethod::Auto { ref identities } if identities == &["/k"]));
         assert_eq!(t.port, 22);
@@ -176,7 +226,7 @@ mod tests {
             target: Some("h".into()),
             ..Default::default()
         }
-        .resolve_with(&ProfileStore::new("/nonexistent"))
+        .resolve_with(&ProfileStore::new("/nonexistent"), &SshConfig::default())
         .unwrap();
         assert!(matches!(t.auth, AuthMethod::Auto { ref identities } if identities.is_empty()));
     }
@@ -189,7 +239,7 @@ mod tests {
     #[test]
     fn missing_target_is_an_error() {
         assert!(TargetArgs::default()
-            .resolve_with(&ProfileStore::new("/nonexistent"))
+            .resolve_with(&ProfileStore::new("/nonexistent"), &SshConfig::default())
             .is_err());
     }
 
@@ -213,7 +263,7 @@ mod tests {
             profile: Some("box".into()),
             ..Default::default()
         }
-        .resolve_with(&store)
+        .resolve_with(&store, &SshConfig::default())
         .unwrap();
         assert_eq!(
             (t.host.as_str(), t.port, t.user.as_str()),
@@ -227,10 +277,65 @@ mod tests {
             auth: Some(AuthChoice::Agent),
             ..Default::default()
         }
-        .resolve_with(&store)
+        .resolve_with(&store, &SshConfig::default())
         .unwrap();
         assert_eq!(t.port, 22);
         assert!(matches!(t.auth, AuthMethod::Agent));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ssh_config_fills_gaps_but_flags_win() {
+        let dir = std::env::temp_dir().join(format!("vortexssh-target-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = dir.join("web_key");
+        std::fs::write(&key, "").unwrap();
+        let config = SshConfig::parse(
+            &format!(
+                "Host web\n  HostName 10.0.0.9\n  User deploy\n  Port 2200\n  \
+                 IdentityFile {}\n  IdentityFile /missing/key\n",
+                key.display()
+            ),
+            &dir,
+        )
+        .unwrap();
+        let store = ProfileStore::new("/nonexistent");
+
+        let t = TargetArgs {
+            target: Some("web".into()),
+            ..Default::default()
+        }
+        .resolve_with(&store, &config)
+        .unwrap();
+        assert_eq!(
+            (t.host.as_str(), t.port, t.user.as_str()),
+            ("10.0.0.9", 2200, "deploy")
+        );
+        let key_str = key.display().to_string();
+        assert!(
+            matches!(t.auth, AuthMethod::Auto { ref identities } if identities == std::slice::from_ref(&key_str))
+        );
+
+        let t = TargetArgs {
+            target: Some("root@web".into()),
+            port: Some(22),
+            identity: Some("/other".into()),
+            ..Default::default()
+        }
+        .resolve_with(&store, &config)
+        .unwrap();
+        assert_eq!((t.port, t.user.as_str()), (22, "root"));
+        assert!(matches!(t.auth, AuthMethod::Auto { ref identities } if identities == &["/other"]));
+
+        let t = TargetArgs {
+            target: Some("web".into()),
+            auth: Some(AuthChoice::Key),
+            ..Default::default()
+        }
+        .resolve_with(&store, &config)
+        .unwrap();
+        assert!(matches!(t.auth, AuthMethod::PublicKey { ref key_path } if key_path == &key_str));
 
         std::fs::remove_dir_all(&dir).ok();
     }

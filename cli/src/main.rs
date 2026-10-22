@@ -9,7 +9,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use vortexssh_core::config::{AuthMethod, ForwardKind, ForwardRule, Profile, ProfileStore};
 use vortexssh_core::prompt::TtyPrompter;
 use vortexssh_core::ssh::{ChannelMsg, KnownHosts, Session};
-use vortexssh_core::target::{auth_from_flags, split_target, AuthChoice, Target, TargetArgs};
+use vortexssh_core::target::{
+    auth_from_flags, local_user, split_target, AuthChoice, Target, TargetArgs,
+};
 use vortexssh_core::term::Terminal;
 use vortexssh_core::tunnel;
 
@@ -189,6 +191,9 @@ fn parse_forwards(
 /// Connects and authenticates, prompting on the terminal for secrets and
 /// unknown host keys as needed.
 async fn connect_session(target: &Target) -> Result<Session> {
+    for warning in &target.warnings {
+        eprintln!("warning: {warning}");
+    }
     let prompter = Arc::new(TtyPrompter);
     Session::connect(
         &target.host,
@@ -322,7 +327,7 @@ fn profile_add(
 ) -> Result<()> {
     let store = ProfileStore::default_location()?;
     let (default_user, host) = split_target(&target);
-    let user = user.unwrap_or(default_user);
+    let user = user.or(default_user).unwrap_or_else(local_user);
     let port = port.unwrap_or(22);
     let auth = auth_from_flags(auth, identity)?;
 

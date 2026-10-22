@@ -48,6 +48,34 @@ are not supported yet and are rejected with an explanation.
 
 ---
 
+### `~/.ssh/config`
+
+When connecting to a `TARGET` (not `--profile`), `~/.ssh/config` and then
+`/etc/ssh/ssh_config` are read, as OpenSSH does, so host aliases work:
+
+```
+Host web
+    HostName 10.0.0.5
+    User deploy
+    Port 2222
+    IdentityFile ~/.ssh/web_key
+```
+
+`vortexssh connect web` then connects to `deploy@10.0.0.5:2222` with that key.
+
+- Supported: `Host` (with `*`, `?` and `!` patterns), `Match` (`all`, `host`,
+  `originalhost`, `user`, `localuser`, `final`; others never match),
+  `Include` (with globs), `HostName`, `User`, `Port`, `IdentityFile` (with
+  `~` and the `%h %n %r %u %p %d %%` tokens).
+- The first value found wins; `IdentityFile`s add up. `IdentityFile`s that
+  don't exist are skipped.
+- Command-line `user@`, `-p`, `-i` and `--auth` take priority.
+- `ProxyJump`, `ProxyCommand` and `CertificateFile` are not supported. You get
+  a warning when they apply. Other keywords are ignored silently.
+- A malformed file is an error that names the file and line.
+
+---
+
 ## 3. CLI — `vortexssh`
 
 ```
@@ -262,7 +290,11 @@ The engine every front-end uses. No UI/rendering code lives here.
 ### `target` / `prompt` — shared front-end plumbing
 
 - `TargetArgs { target, port, identity, profile, auth }` (`clap::Args` with the
-  `clap` feature) → `resolve() -> Target { host, port, user, auth, forwards }`
+  `clap` feature) → `resolve() -> Target { host, port, user, auth, forwards, warnings }`
+  (`resolve_with(&ProfileStore, &SshConfig)` for explicit sources)
+- `SshConfig` — `load_default()`, `from_file(path, base)`, `parse(text, base)`,
+  `lookup(host, user) -> HostConfig { hostname, user, port, identity_files, unsupported }`,
+  `host_aliases()`
 - `Prompter` trait — `secret`, `confirm_host_key`, `keyboard_interactive`;
   `TtyPrompter` (terminal, `tty` feature) and `NoPrompt`
 

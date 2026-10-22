@@ -30,6 +30,9 @@ async fn main() -> Result<()> {
         .init();
 
     let target = Cli::parse().target.resolve()?;
+    for warning in &target.warnings {
+        eprintln!("warning: {warning}");
+    }
 
     // Authentication happens on the ordinary terminal, before we take over
     // the screen with raw mode + the alternate buffer.

@@ -33,6 +33,9 @@ fn main() -> Result<()> {
         .init();
 
     let target = Cli::parse().target.resolve()?;
+    for warning in &target.warnings {
+        eprintln!("warning: {warning}");
+    }
     let term_type = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());
 
     let rt = tokio::runtime::Builder::new_multi_thread()
