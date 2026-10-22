@@ -3,9 +3,6 @@
 //! Authentication (password/passphrase prompts and host-key confirmation)
 //! happens inside the window; the SSH session runs on a background tokio
 //! task and talks to this single-threaded GUI over channels (see [`ssh`]).
-//! On Windows the binary is a windowed (GUI) subsystem with no console.
-
-#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
 mod keys;

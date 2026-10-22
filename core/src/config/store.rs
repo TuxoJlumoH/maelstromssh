@@ -15,8 +15,7 @@ impl ProfileStore {
         Self { dir: dir.into() }
     }
 
-    /// Uses the platform config directory (`$XDG_CONFIG_HOME`/`~/.config` on
-    /// Unix, `%APPDATA%` on Windows) under `vortexssh/profiles`.
+    /// Uses `$XDG_CONFIG_HOME/vortexssh/profiles` (default `~/.config/...`).
     pub fn default_location() -> Result<Self> {
         let base = dirs::config_dir()
             .ok_or_else(|| Error::Config("could not determine the config directory".into()))?;

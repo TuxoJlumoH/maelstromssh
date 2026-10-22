@@ -6,7 +6,7 @@ terminal UI, `vortexssh-gui` graphical UI) all driven by one UI-agnostic engine
 
 - Workspace: `~/Projects/vortexssh`
 - Crates: `core/` (library), `cli/`, `tui/`, `gui/` (binaries)
-- Config dir: `~/.config/vortexssh/profiles/*.toml` (Linux) / `%APPDATA%\vortexssh\profiles` (Windows)
+- Config dir: `~/.config/vortexssh/profiles/*.toml`
 
 ---
 
@@ -181,8 +181,7 @@ scrolls back; window resize resizes the remote PTY.
 
 Graphical window (`egui`/`eframe`). Same flags as the TUI. Authentication
 (password/passphrase prompts and host-key confirmation) happens **inside the
-window**, so the binary needs no terminal — on Windows it is a windowed (GUI)
-subsystem with no console.
+window**, so it can be launched from a desktop menu without a terminal.
 
 ```
 vortexssh-gui [TARGET] [OPTIONS]
@@ -211,9 +210,7 @@ Arrows / Home / End / F-keys / `Alt`+key are forwarded; mouse reporting
 
 ## 6. Profiles (file format)
 
-Profiles are TOML files under the platform config directory
-(`~/.config/vortexssh/profiles/<name>.toml` on Linux,
-`%APPDATA%\vortexssh\profiles\<name>.toml` on Windows).
+Profiles are TOML files at `~/.config/vortexssh/profiles/<name>.toml`.
 
 ```toml
 name = "mybox"
@@ -255,8 +252,7 @@ The engine every front-end uses. No UI/rendering code lives here.
 - `save_openssh(&PrivateKey, path)`
 - `KeyKind::{ Ed25519, Rsa{bits} }` (RSA min 1024 bits)
 - `HashAlg::{ Sha256, ... }` (re-exported)
-- `keys::agent` — `connect_env()`, `list_identities(agent)` for `ssh-agent`
-  (`$SSH_AUTH_SOCK` on Unix, the OpenSSH named pipe on Windows)
+- `keys::agent` — `connect_env()`, `list_identities(agent)` for `ssh-agent` (`$SSH_AUTH_SOCK`)
 
 ### `ssh` — transport & sessions
 
@@ -338,65 +334,3 @@ forwarding tasks.
 
 The TUI/GUI run the SSH I/O on a background tokio task and keep the `Terminal`
 on the UI thread; the CLI drives it directly in an async loop.
-
----
-
-## 9. Roadmap (phased)
-
-| Phase | Status | Content |
-|---|---|---|
-| 0 | done | SSH transport, password/key/agent auth, profiles, Ed25519 keygen, SFTP subsystem + tunnel stubs |
-| 1 | done | Basic VT parsing (cursor tracking) |
-| 2 | done | Full screen grid + scrollback + reflow, `ratatui` TUI, `egui` GUI |
-| 3 | done | Interactive SFTP shell + scriptable get/put |
-| 4 | done | Port forwarding (local/remote/dynamic SOCKS) |
-| 5 | done | RSA key generation |
-| 6 | done | **Windows release** — standalone `vortexssh.exe` / `vortexssh-tui.exe` / `vortexssh-gui.exe` |
-
-**Phase 6 — Windows `.exe` release.** The engine and all three front-ends are
-portable Rust; native Windows binaries are produced by cross-compiling to
-`x86_64-pc-windows-gnu`:
-
-```bash
-rustup target add x86_64-pc-windows-gnu
-cargo build --release --target x86_64-pc-windows-gnu
-# -> target/x86_64-pc-windows-gnu/release/{vortexssh,vortexssh-tui,vortexssh-gui}.exe
-```
-
-Verified working (PE32+ x86-64 executables). The two earlier gaps are closed:
-
-- **`ssh-agent` on Windows** — `keys::agent` now connects to the OpenSSH named
-  pipe (`\\.\pipe\openssh-ssh-agent`); Unix keeps `$SSH_AUTH_SOCK`.
-- **GUI is a proper windowed app** — authentication (password/passphrase and
-  host-key confirmation) happens inside the window, and the binary is built
-  with `windows_subsystem = "windows"` (no console on Windows).
-
-### Windows installer
-
-The app icon lives in `assets/` (`icon.svg` source, `icon.ico`, `icon.png`).
-It is embedded in the three `.exe` files (via `build.rs`), set as the GUI
-window icon, and used by both installers and their shortcuts.
-
-Two installer scripts package the three `.exe`s into a single setup program
-with Start Menu shortcuts, an optional "Add to PATH" task, and an uninstaller:
-
-- **NSIS** (`installer/windows/vortexssh.nsi`) — builds **anywhere**, including
-  Linux (the native `makensis` compiles Windows installers), producing
-  `vortexssh-setup-<version>.exe`:
-
-  ```bash
-  cargo build --release --target x86_64-pc-windows-gnu
-  makensis installer/windows/vortexssh.nsi
-  ```
-
-- **Inno Setup** (`installer/windows/vortexssh.iss`) — the standard Windows
-  installer; compiled with `ISCC.exe` on Windows or via CI:
-
-  ```bat
-  cargo build --release
-  ISCC.exe installer\windows\vortexssh.iss
-  ```
-
-- **CI** — `.github/workflows/windows-installer.yml` builds the binaries on
-  `windows-latest`, compiles the Inno Setup installer, and uploads
-  `vortexssh-setup-<version>.exe` as an artifact (on a `v*` tag or manually).

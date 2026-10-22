@@ -209,7 +209,6 @@ impl Session {
 }
 
 /// Authenticate by trying each identity exposed by the local ssh-agent.
-#[cfg(any(unix, windows))]
 async fn authenticate_agent(handle: &mut Handle<ClientHandler>, user: &str) -> Result<bool> {
     let rsa_hash = handle
         .best_supported_rsa_hash()
@@ -248,11 +247,4 @@ async fn authenticate_agent(handle: &mut Handle<ClientHandler>, user: &str) -> R
     }
 
     Ok(false)
-}
-
-#[cfg(not(any(unix, windows)))]
-async fn authenticate_agent(_handle: &mut Handle<ClientHandler>, _user: &str) -> Result<bool> {
-    Err(Error::Other(
-        "ssh-agent is not supported on this platform".into(),
-    ))
 }
