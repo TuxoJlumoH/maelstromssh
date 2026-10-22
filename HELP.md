@@ -64,7 +64,8 @@ connection; a profile stores it for reuse.
 The **default** is `auto`. Without `-i` it tries the agent, then the default
 keys `~/.ssh/id_ed25519`, `~/.ssh/id_ecdsa` and `~/.ssh/id_rsa`. With `-i` that
 key is tried first, then the agent. The same key is never offered twice, and
-a key's passphrase is only asked for once the server accepts the key. Use
+a key's passphrase is only asked for once the server accepts the key. An empty
+passphrase (or three wrong ones) skips that key and moves on, like OpenSSH. Use
 `--auth key` to try *only* the given key. When everything fails, the error
 lists what was tried and which methods the server accepts.
 

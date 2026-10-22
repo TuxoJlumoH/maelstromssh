@@ -12,6 +12,7 @@ use russh::keys::signature::Signer as _;
 use russh::keys::ssh_encoding::Encode;
 use russh::keys::ssh_key::private::KeypairData;
 use russh::keys::ssh_key::public::KeyData;
+use russh::keys::ssh_key::{self as ssh_key, Algorithm, Signature};
 use russh::keys::{HashAlg, PrivateKey, PublicKey};
 use russh::{MethodKind, MethodSet};
 
@@ -84,23 +85,27 @@ impl KeyFile {
         self.key.public_key()
     }
 
-    async fn unlock(&mut self, prompter: &Arc<dyn Prompter>) -> Result<()> {
+    /// Decrypts the key if needed. Returns `false` when the user skips it
+    /// (an empty passphrase, as in OpenSSH) or gets it wrong too often.
+    async fn unlock(&mut self, prompter: &Arc<dyn Prompter>) -> Result<bool> {
         if !self.key.is_encrypted() {
-            return Ok(());
+            return Ok(true);
         }
-        let label = format!("Passphrase for {}: ", collapse_home(&self.path));
+        let shown = collapse_home(&self.path);
+        let label = format!("Passphrase for {shown} (empty to skip): ");
         for _ in 0..SECRET_ATTEMPTS {
             let label = label.clone();
             let passphrase = ask(prompter, move |p| p.secret(&label)).await?;
+            if passphrase.is_empty() {
+                return Ok(false);
+            }
             if let Ok(key) = self.key.decrypt(passphrase) {
                 self.key = key;
-                return Ok(());
+                return Ok(true);
             }
         }
-        Err(Error::Config(format!(
-            "wrong passphrase for {}",
-            collapse_home(&self.path)
-        )))
+        tracing::warn!("wrong passphrase for {shown}, skipping the key");
+        Ok(false)
     }
 }
 
@@ -127,6 +132,8 @@ fn default_identities() -> Vec<KeyFile> {
 struct FileSigner<'a> {
     key: &'a mut KeyFile,
     prompter: &'a Arc<dyn Prompter>,
+    /// Set when the key was not unlocked (an invalid signature was sent).
+    skipped: bool,
 }
 
 impl russh::Signer for FileSigner<'_> {
@@ -138,17 +145,49 @@ impl russh::Signer for FileSigner<'_> {
         hash_alg: Option<HashAlg>,
         mut to_sign: Vec<u8>,
     ) -> Result<Vec<u8>> {
-        self.key.unlock(self.prompter).await?;
+        let encoding = |e: russh::keys::ssh_encoding::Error| Error::Other(e.to_string());
+        if !self.key.unlock(self.prompter).await? {
+            // russh waits for a signature once the server has accepted the
+            // key, so send one that cannot verify: the server then rejects
+            // this key and authentication moves on to the next method.
+            self.skipped = true;
+            let blob = unverifiable_signature(self.key.public_key().key_data(), hash_alg)
+                .and_then(|sig| Ok(sig.encode_vec()?))
+                .map_err(|e| Error::Other(e.to_string()))?;
+            blob.encode(&mut to_sign).map_err(encoding)?;
+            return Ok(to_sign);
+        }
         let signature = match self.key.key.key_data() {
             KeypairData::Rsa(keypair) => (keypair, hash_alg).try_sign(&to_sign),
             other => other.try_sign(&to_sign),
         }
         .map_err(|e| Error::Other(format!("signing with {}: {e}", self.key.path.display())))?;
-        let encoding = |e: russh::keys::ssh_encoding::Error| Error::Other(e.to_string());
         let blob = signature.encode_vec().map_err(encoding)?;
         blob.encode(&mut to_sign).map_err(encoding)?;
         Ok(to_sign)
     }
+}
+
+/// A well-formed signature for `key` that never verifies (all zeros), so
+/// the server parses it and rejects the key instead of disconnecting.
+fn unverifiable_signature(
+    key: &KeyData,
+    hash_alg: Option<HashAlg>,
+) -> std::result::Result<Signature, ssh_key::Error> {
+    let (algorithm, data) = match key {
+        KeyData::Rsa(rsa) => {
+            let len = rsa.n().as_positive_bytes().map_or(256, <[u8]>::len);
+            (Algorithm::Rsa { hash: hash_alg }, vec![0; len])
+        }
+        KeyData::Ecdsa(ecdsa) => {
+            // r = s = 1, as two mpints.
+            let one = [0, 0, 0, 1, 1];
+            let curve = ecdsa.curve();
+            (Algorithm::Ecdsa { curve }, [one, one].concat())
+        }
+        other => (other.algorithm(), vec![0; 64]),
+    };
+    Signature::new(algorithm, data)
 }
 
 /// Runs a (possibly blocking) prompt without stalling the async executor.
@@ -317,11 +356,17 @@ impl<'a> Authenticator<'a> {
         let mut signer = FileSigner {
             key: &mut key,
             prompter: self.prompter,
+            skipped: false,
         };
         let result = self
             .handle
             .authenticate_publickey_with(self.user, public, hash_alg, &mut signer)
             .await?;
+        if signer.skipped {
+            if let Some(entry) = self.tried.last_mut() {
+                entry.push_str(" (skipped)");
+            }
+        }
         Ok(self.record(result))
     }
 

@@ -335,3 +335,25 @@ async fn missing_key_file_fails_before_connecting() {
     .to_string();
     assert!(err.contains("/no/such/key not found"), "{err}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_passphrase_skips_key_and_falls_back() {
+    let (path, public) = key_file("enc_skip", Some("pw"));
+    let port = serve(&[MethodKind::PublicKey, MethodKind::Password], Some(public)).await;
+    let p = Scripted::new(&[Some(""), Some(PASSWORD)]);
+    connect_to(port, auto(&[&path]), p.clone()).await.unwrap();
+    let asked: Vec<String> = p.asked().into_iter().map(|(q, _)| q).collect();
+    assert!(
+        asked[0].starts_with("Passphrase for") && asked[1].contains("password"),
+        "{asked:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wrong_passphrases_skip_key_and_fall_back() {
+    let (path, public) = key_file("enc_wrong", Some("pw"));
+    let port = serve(&[MethodKind::PublicKey, MethodKind::Password], Some(public)).await;
+    let p = Scripted::new(&[Some("a"), Some("b"), Some("c"), Some(PASSWORD)]);
+    connect_to(port, auto(&[&path]), p.clone()).await.unwrap();
+    assert_eq!(p.asked().len(), 4);
+}
