@@ -51,6 +51,8 @@ fn main() -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_title("VortexSSH")
+            // Matches StartupWMClass in packaging/vortexssh.desktop.
+            .with_app_id("vortexssh-gui")
             .with_icon(icon)
             .with_inner_size([1000.0, 650.0])
             .with_min_inner_size([320.0, 240.0]),
