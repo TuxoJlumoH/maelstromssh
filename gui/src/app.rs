@@ -614,7 +614,6 @@ mod tests {
     fn prompts_for_passphrase_only_for_keys() {
         let key = AuthMethod::PublicKey {
             key_path: "id_ed25519".into(),
-            use_agent_if_available: false,
         };
         assert_eq!(auth_prompts(&key), (false, true));
     }

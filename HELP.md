@@ -224,12 +224,10 @@ forwards = [
   { kind = "local", bind_host = "127.0.0.1", bind_port = 8080, dest_host = "localhost", dest_port = 80 },
 ]
 terminal = { term_type = "xterm-256color", scrollback_lines = 10000 }
-trust_host_key_blindly = false
 ```
 
 `auth` methods serialize as `password`, `public_key` (with `key_path`),
-`agent`, or `keyboard_interactive`. `forwards` and `trust_host_key_blindly`
-are optional and default off.
+`agent`, or `keyboard_interactive`. `forwards` and `terminal` are optional.
 
 ---
 
@@ -239,8 +237,8 @@ The engine every front-end uses. No UI/rendering code lives here.
 
 ### `config` — persisted profiles
 
-- `Profile { name, host, port, user, auth, forwards, terminal, trust_host_key_blindly }`
-- `AuthMethod::{ Password, PublicKey{key_path, use_agent_if_available}, Agent, KeyboardInteractive }`
+- `Profile { name, host, port, user, auth, forwards, terminal }`
+- `AuthMethod::{ Password, PublicKey{key_path}, Agent, KeyboardInteractive }`
 - `ForwardRule { kind, bind_host, bind_port, dest_host, dest_port }` / `ForwardKind::{ Local, Remote, Dynamic }`
 - `TerminalSettings { term_type, scrollback_lines, color_scheme }`
 - `ProfileStore` — `new(dir)`, `default_location()`, `list()`, `load(name)`, `save(&profile)`, `delete(name)`

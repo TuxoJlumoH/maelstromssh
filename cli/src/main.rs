@@ -233,7 +233,6 @@ fn to_auth_method(choice: AuthChoice, identity: Option<PathBuf>) -> Result<AuthM
             let path = identity.context("--auth key requires --identity <PATH>")?;
             AuthMethod::PublicKey {
                 key_path: path.display().to_string(),
-                use_agent_if_available: false,
             }
         }
         AuthChoice::Agent => AuthMethod::Agent,
@@ -277,7 +276,6 @@ fn resolve_spec(
             (Some(choice), id) => to_auth_method(choice, id)?,
             (None, Some(id)) => AuthMethod::PublicKey {
                 key_path: id.display().to_string(),
-                use_agent_if_available: false,
             },
             (None, None) => AuthMethod::Password,
         };
@@ -508,7 +506,6 @@ fn profile_add(
         (Some(choice), id) => to_auth_method(choice, id)?,
         (None, Some(id)) => AuthMethod::PublicKey {
             key_path: id.display().to_string(),
-            use_agent_if_available: false,
         },
         (None, None) => AuthMethod::Password,
     };
@@ -521,7 +518,6 @@ fn profile_add(
         auth,
         forwards,
         terminal: Default::default(),
-        trust_host_key_blindly: false,
     };
     store.save(&profile)?;
     println!("Saved profile '{name}'");

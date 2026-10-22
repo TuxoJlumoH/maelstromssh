@@ -14,9 +14,6 @@ pub struct Profile {
     pub forwards: Vec<ForwardRule>,
     #[serde(default)]
     pub terminal: TerminalSettings,
-    /// If true, skip host key verification prompts (never enabled by default).
-    #[serde(default)]
-    pub trust_host_key_blindly: bool,
 }
 
 fn default_port() -> u16 {
@@ -28,12 +25,8 @@ fn default_port() -> u16 {
 pub enum AuthMethod {
     /// Prompt for a password interactively; never stored in the profile.
     Password,
-    /// Public key auth. `key_path` may point to an OpenSSH or `.ppk` file.
-    PublicKey {
-        key_path: String,
-        #[serde(default)]
-        use_agent_if_available: bool,
-    },
+    /// Public key auth with an OpenSSH-format private key.
+    PublicKey { key_path: String },
     /// Delegate entirely to a running ssh-agent.
     Agent,
     /// keyboard-interactive (e.g. 2FA prompts).

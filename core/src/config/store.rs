@@ -83,7 +83,6 @@ mod tests {
             auth: AuthMethod::Password,
             forwards: vec![],
             terminal: Default::default(),
-            trust_host_key_blindly: false,
         };
         store.save(&profile).unwrap();
         let loaded = store.load("test-host").unwrap();
@@ -93,6 +92,21 @@ mod tests {
         let names = store.list().unwrap();
         assert_eq!(names, vec!["test-host".to_string()]);
 
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn loads_profiles_with_removed_fields() {
+        let tmp = tempdir().with_extension("legacy");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("old.toml"),
+            "name = \"old\"\nhost = \"h\"\nuser = \"u\"\ntrust_host_key_blindly = false\n\
+             auth = { method = \"public_key\", key_path = \"/k\", use_agent_if_available = true }\n",
+        )
+        .unwrap();
+        let p = ProfileStore::new(&tmp).load("old").unwrap();
+        assert_eq!(p.port, 22);
         std::fs::remove_dir_all(&tmp).ok();
     }
 
