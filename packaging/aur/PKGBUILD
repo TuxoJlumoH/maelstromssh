@@ -1,0 +1,48 @@
+# Maintainer: TuxoJlumoH <smokie.bg@gmail.com>
+
+pkgname=vortexssh
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='SSH/SFTP client with CLI, terminal UI and graphical front-ends'
+arch=('x86_64' 'aarch64')
+url='https://github.com/TuxoJlumoH/vortexssh'
+license=('MIT OR Apache-2.0')
+depends=('gcc-libs' 'glibc' 'hicolor-icon-theme')
+optdepends=(
+  'libxkbcommon: GUI keyboard input'
+  'wayland: GUI on Wayland'
+  'libglvnd: GUI rendering (EGL)'
+  'libx11: GUI on X11'
+  'libxcursor: GUI on X11'
+  'libxi: GUI on X11'
+  'openssh: ssh-agent for key-based login'
+)
+makedepends=('cargo')
+options=('!lto')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+# Run `updpkgsums` after the v$pkgver tag is pushed.
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --workspace
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  make install DESTDIR="$pkgdir" PREFIX=/usr
+}

@@ -11,20 +11,30 @@
 
 ## Features
 
-- **SSH** — password, public-key, and `ssh-agent` authentication, with trust-on-first-use host-key verification.
+- **SSH** — works like OpenSSH out of the box: `ssh-agent`, `~/.ssh` keys, password and keyboard-interactive (2FA), `~/.ssh/config` host aliases, and trust-on-first-use host-key verification.
 - **SFTP** — scriptable `get`/`put`/`ls`/`rm`/`mkdir`/`rename`, plus an interactive shell.
 - **Port forwarding** — local, remote, and dynamic (SOCKS5 proxy).
 - **Key generation** — Ed25519 and RSA (configurable size).
 - **Full terminal emulator** — 256-color + truecolor, scrollback, reflow-on-resize, scroll regions, alternate screen, mouse reporting, bracketed paste.
 - **Profiles** — persisted connection settings (with per-profile port forwards).
 
-## Getting started
+## Install
 
-```bash
-git clone git@github.com:TuxoJlumoH/vortexssh.git
-cd vortexssh
-cargo build --release
-```
+- **Arch / CachyOS**: build the package from [`packaging/aur/PKGBUILD`](packaging/aur/PKGBUILD)
+  with `makepkg -si`.
+- **Debian / Ubuntu**: download the `.deb` from the
+  [releases page](https://github.com/TuxoJlumoH/vortexssh/releases) and run `sudo apt install ./vortexssh_*.deb`.
+- **Any Linux**: unpack the release tarball and copy its `bin/` and `share/` into
+  `/usr/local` or `~/.local`.
+- **From source** (Rust stable):
+
+  ```bash
+  git clone https://github.com/TuxoJlumoH/vortexssh.git
+  cd vortexssh
+  make                          # cargo build --release
+  sudo make install             # /usr/local, with a desktop entry and icons
+  # or: make install PREFIX=~/.local
+  ```
 
 Three binaries are produced:
 

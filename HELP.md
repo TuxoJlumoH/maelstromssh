@@ -20,6 +20,32 @@ cargo test --workspace           # run the test suite
 
 Binaries end up in `target/release/` (or `target/debug/` after `cargo build`).
 
+Install and packaging (see the `Makefile`):
+
+| Command | Result |
+|---|---|
+| `make` | `cargo build --release --locked` |
+| `sudo make install` | binaries, `.desktop` entry, icons, docs and licenses under `/usr/local` (`PREFIX=`, `DESTDIR=` supported) |
+| `make uninstall` | removes what `install` copied (same `PREFIX`) |
+| `make dist` | `dist/vortexssh-<ver>-<arch>-linux.tar.gz` + `.sha256` |
+| `make deb` | `dist/vortexssh_<ver>-1_<arch>.deb` (needs `cargo install cargo-deb`) |
+
+`packaging/aur/PKGBUILD` builds an Arch package from a release tag.
+
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, clippy with
+`-D warnings` and the tests on every push to `main` and every pull request.
+Pushing a `v*` tag that matches the `Cargo.toml` version
+(`.github/workflows/release.yml`) publishes a GitHub release with the
+tarball and the `.deb`.
+
+Releasing:
+
+1. Bump `version` in the root `Cargo.toml`, run `cargo build` to update
+   `Cargo.lock`, and commit.
+2. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+3. Update `pkgver` in `packaging/aur/PKGBUILD`, then run `updpkgsums` and
+   `makepkg --printsrcinfo > .SRCINFO` (and push to the AUR repo if published there).
+
 ---
 
 ## 2. Authentication methods

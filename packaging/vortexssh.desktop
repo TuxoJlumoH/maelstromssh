@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=VortexSSH
+GenericName=SSH Client
+Comment=Connect to remote machines over SSH
+Exec=vortexssh-gui
+Icon=vortexssh
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=ssh;sftp;terminal;remote;shell;
+StartupWMClass=vortexssh-gui
