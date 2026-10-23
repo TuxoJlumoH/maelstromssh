@@ -301,7 +301,9 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
 .dialog-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
 .dialog-form .row { display: flex; gap: 10px; }
 .dialog-form .row label:first-child { width: 100px; flex: none; }
-.dialog-form .buttons { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+/* The default button comes first in the markup, because Enter in a field
+   presses the first submit button; row-reverse puts it on the right. */
+.dialog-form .buttons { display: flex; flex-direction: row-reverse; gap: 8px; justify-content: flex-start; align-items: center; }
 .dialog-form .message { margin: 0; white-space: pre-wrap; word-break: break-word; }
 .fingerprint {
   font-family: ui-monospace, monospace;

@@ -116,8 +116,9 @@ function nextQuestion() {
   $(".cancel", askDialog).textContent = spec.cancel || "Cancel";
   askDialog.returnValue = "";
   askDialog.showModal();
+  // Dangerous confirmations start on Cancel, so a stray Enter is harmless.
   const first = $("input", fields);
-  (first || ok).focus();
+  (first || (spec.danger ? $(".cancel", askDialog) : ok)).focus();
 }
 
 askDialog.addEventListener("close", () => {
