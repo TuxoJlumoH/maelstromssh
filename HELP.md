@@ -394,6 +394,8 @@ The engine every front-end uses. No UI/rendering code lives here.
   (`DirEntry { name, is_dir, is_symlink, size, modified, permissions }`;
   symlinks to directories count as directories).
 - `open_read`, `open_write` -> `File` (async read/write, for streaming), `file_size`
+- `replace(sftp, temp, dest)` — move a finished upload over `dest` without ever
+  leaving it missing or half-written (keeps its permissions, follows symlinks)
 - `canonicalize`, `remove_file`, `remove_dir`, `create_dir`, `rename`
 - Re-exports `SftpSession` so front-ends can name the type.
 

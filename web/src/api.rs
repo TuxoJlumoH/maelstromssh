@@ -247,6 +247,10 @@ fn content_disposition(name: &str) -> String {
 
 /// `PUT /api/conn/{id}/upload?path=…`: streams the request body into a
 /// remote file (created or replaced).
+///
+/// The data goes to a temporary file next to the target, which replaces the
+/// target only once the whole body has arrived, so a cancelled or failed
+/// upload never leaves a truncated file behind.
 pub async fn upload(
     State(app): State<Arc<App>>,
     Path(id): Path<u64>,
@@ -257,14 +261,49 @@ pub async fn upload(
         .conn(id)
         .ok_or((StatusCode::NOT_FOUND, "connection closed".into()))?;
     let sftp = conn.sftp().await.map_err(server_error)?;
-    let mut file = sftp::open_write(sftp, &q.path).await.map_err(bad_request)?;
+    let temp = temp_upload_path(&q.path).map_err(bad_request)?;
+    let mut file = sftp::open_write(sftp, &temp).await.map_err(bad_request)?;
     let stream = body.into_data_stream().map_err(std::io::Error::other);
     let mut reader = StreamReader::new(stream);
-    let written = tokio::io::copy(&mut reader, &mut file)
-        .await
-        .map_err(server_error)?;
-    file.shutdown().await.map_err(server_error)?;
-    Ok(Json(json!({ "written": written })))
+    let copied = async {
+        let written = tokio::io::copy(&mut reader, &mut file).await?;
+        file.shutdown().await?;
+        Ok::<_, std::io::Error>(written)
+    }
+    .await;
+    drop(file);
+    let finished = match copied {
+        Ok(written) => sftp::replace(sftp, &temp, &q.path)
+            .await
+            .map(|()| written)
+            .map_err(bad_request),
+        Err(e) => Err(server_error(format!("upload interrupted: {e}"))),
+    };
+    if finished.is_err() {
+        let _ = sftp::remove_file(sftp, &temp).await;
+    }
+    Ok(Json(json!({ "written": finished? })))
+}
+
+/// A hidden, unique name in the same folder as `path` (so the final rename
+/// stays on one file system).
+fn temp_upload_path(path: &str) -> Result<String, String> {
+    let (dir, name) = match path.rsplit_once('/') {
+        Some((dir, name)) => (dir, name),
+        None => ("", path),
+    };
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(format!("'{path}' is not a file name"));
+    }
+    let mut suffix = [0u8; 6];
+    getrandom::fill(&mut suffix).map_err(|e| e.to_string())?;
+    let suffix: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
+    let temp = format!(".{name}.vortexssh-{suffix}.part");
+    Ok(if path.contains('/') {
+        format!("{dir}/{temp}")
+    } else {
+        temp
+    })
 }
 
 #[cfg(test)]
@@ -278,5 +317,18 @@ mod tests {
             "attachment; filename=\"a_b_.txt\"; filename*=UTF-8''a%20b%22.txt"
         );
         assert!(content_disposition("файл.txt").contains("filename*=UTF-8''%D1%84"));
+    }
+
+    #[test]
+    fn temp_upload_paths_stay_in_the_folder() {
+        let temp = temp_upload_path("/home/me/a.txt").unwrap();
+        assert!(temp.starts_with("/home/me/.a.txt.vortexssh-"), "{temp}");
+        assert!(temp.ends_with(".part"));
+        assert_ne!(temp, temp_upload_path("/home/me/a.txt").unwrap());
+        assert!(temp_upload_path("a.txt").unwrap().starts_with(".a.txt."));
+        assert!(temp_upload_path("/top").unwrap().starts_with("/.top."));
+        for bad in ["/home/me/", "", "/x/..", "."] {
+            assert!(temp_upload_path(bad).is_err(), "{bad:?}");
+        }
     }
 }

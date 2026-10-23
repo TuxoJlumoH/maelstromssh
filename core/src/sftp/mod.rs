@@ -148,3 +148,37 @@ pub async fn create_dir(sftp: &SftpSession, path: &str) -> Result<()> {
 pub async fn rename(sftp: &SftpSession, from: &str, to: &str) -> Result<()> {
     sftp.rename(from, to).await.map_err(Error::Sftp)
 }
+
+/// Moves a finished upload at `temp` to `dest`, replacing `dest` if it
+/// exists and keeping its permission bits. A symlink at `dest` is followed,
+/// so the file it points to is replaced. SFTP v3 renames do not overwrite,
+/// so an existing file is moved aside first and put back if the final
+/// rename fails: `dest` is never left missing or half-written.
+pub async fn replace(sftp: &SftpSession, temp: &str, dest: &str) -> Result<()> {
+    let Ok(meta) = sftp.symlink_metadata(dest).await else {
+        return rename(sftp, temp, dest).await;
+    };
+    let (dest, meta) = if meta.file_type().is_symlink() {
+        let target = canonicalize(sftp, dest).await?;
+        let meta = sftp.metadata(target.as_str()).await.map_err(Error::Sftp)?;
+        (target, meta)
+    } else {
+        (dest.to_string(), meta)
+    };
+    if meta.file_type().is_dir() {
+        return Err(Error::Other(format!("{dest} is a folder")));
+    }
+    if let Some(permissions) = meta.permissions {
+        let mut attrs = russh_sftp::protocol::FileAttributes::empty();
+        attrs.permissions = Some(permissions & 0o7777);
+        let _ = sftp.set_metadata(temp, attrs).await;
+    }
+    let backup = format!("{temp}.old");
+    rename(sftp, &dest, &backup).await?;
+    if let Err(e) = rename(sftp, temp, &dest).await {
+        let _ = rename(sftp, &backup, &dest).await;
+        return Err(e);
+    }
+    let _ = remove_file(sftp, &backup).await;
+    Ok(())
+}
