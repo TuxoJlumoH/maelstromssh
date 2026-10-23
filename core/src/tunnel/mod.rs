@@ -8,13 +8,15 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::task::AbortHandle;
 
 use crate::config::{ForwardKind, ForwardRule};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::ssh::{Channel, ChannelMsg, ClientHandle, Msg, ServerEvent, Session};
 
 const BUF_SIZE: usize = 64 * 1024;
@@ -46,58 +48,133 @@ impl fmt::Display for ForwardInfo {
 /// line per forward. Detached background tasks carry a cloned [`ClientHandle`]
 /// and keep running for the life of the session.
 pub async fn start_all(session: &mut Session, rules: &[ForwardRule]) -> Result<Vec<ForwardInfo>> {
-    let handle = session.handle();
+    let forwarder = Forwarder::new(session);
     let mut infos = Vec::new();
-    let mut remote_map: HashMap<u16, (String, u16)> = HashMap::new();
-
     for rule in rules {
+        infos.push(forwarder.start(rule).await?.info);
+    }
+    Ok(infos)
+}
+
+/// Remote-forward destinations, keyed by the port the server listens on.
+type RemoteMap = Arc<Mutex<HashMap<u16, (String, u16)>>>;
+
+/// Starts and stops individual forwards on one session, for front-ends that
+/// manage forwards while connected.
+pub struct Forwarder {
+    handle: ClientHandle,
+    /// `None` when the session's server events were already taken, so
+    /// remote forwards cannot be dispatched.
+    remote: Option<RemoteMap>,
+}
+
+/// A running forward. Dropping it leaves the forward running; call
+/// [`ActiveForward::stop`] to end it.
+pub struct ActiveForward {
+    pub info: ForwardInfo,
+    stop: Stop,
+}
+
+enum Stop {
+    Listener(AbortHandle),
+    Remote {
+        handle: ClientHandle,
+        bind_host: String,
+        port: u16,
+        map: RemoteMap,
+    },
+}
+
+impl Forwarder {
+    /// Takes the session's server-event stream to dispatch remote forwards.
+    pub fn new(session: &mut Session) -> Self {
+        let remote = session.take_events().map(|rx| {
+            let map = RemoteMap::default();
+            tokio::spawn(remote_dispatcher(rx, map.clone()));
+            map
+        });
+        Self {
+            handle: session.handle(),
+            remote,
+        }
+    }
+
+    pub async fn start(&self, rule: &ForwardRule) -> Result<ActiveForward> {
         let dest_host = rule.dest_host.clone().unwrap_or_else(|| "127.0.0.1".into());
         let dest_port = rule.dest_port.unwrap_or(0);
-        match rule.kind {
+        let dest = format!("{dest_host}:{dest_port}");
+        Ok(match rule.kind {
             ForwardKind::Local => {
-                let local = forward_local(
-                    handle.clone(),
-                    &rule.bind_host,
-                    rule.bind_port,
-                    dest_host.clone(),
+                let listener = bind(&rule.bind_host, rule.bind_port).await?;
+                let local = listener.local_addr()?;
+                let task = tokio::spawn(serve_local(
+                    listener,
+                    self.handle.clone(),
+                    dest_host,
                     dest_port,
-                )
-                .await?;
-                infos.push(ForwardInfo::Local {
-                    local,
-                    dest: format!("{dest_host}:{dest_port}"),
-                });
+                ));
+                ActiveForward {
+                    info: ForwardInfo::Local { local, dest },
+                    stop: Stop::Listener(task.abort_handle()),
+                }
             }
             ForwardKind::Dynamic => {
-                let local =
-                    forward_dynamic(handle.clone(), &rule.bind_host, rule.bind_port).await?;
-                infos.push(ForwardInfo::Dynamic { local });
+                let listener = bind(&rule.bind_host, rule.bind_port).await?;
+                let local = listener.local_addr()?;
+                let task = tokio::spawn(serve_dynamic(listener, self.handle.clone()));
+                ActiveForward {
+                    info: ForwardInfo::Dynamic { local },
+                    stop: Stop::Listener(task.abort_handle()),
+                }
             }
             ForwardKind::Remote => {
-                let port = handle
+                let map = self.remote.clone().ok_or_else(|| {
+                    Error::Other("remote forwarding is not available on this session".into())
+                })?;
+                let bound = self
+                    .handle
                     .tcpip_forward(&rule.bind_host, rule.bind_port)
                     .await?;
-                let actual = if rule.bind_port == 0 {
-                    port
+                let port = if rule.bind_port == 0 {
+                    bound
                 } else {
                     rule.bind_port
                 };
-                remote_map.insert(actual, (dest_host.clone(), dest_port));
-                infos.push(ForwardInfo::Remote {
-                    port: actual,
-                    dest: format!("{dest_host}:{dest_port}"),
-                });
+                map.lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(port, (dest_host, dest_port));
+                ActiveForward {
+                    info: ForwardInfo::Remote { port, dest },
+                    stop: Stop::Remote {
+                        handle: self.handle.clone(),
+                        bind_host: rule.bind_host.clone(),
+                        port,
+                        map,
+                    },
+                }
+            }
+        })
+    }
+}
+
+impl ActiveForward {
+    /// Stops accepting new connections; connections already open keep
+    /// running until they close.
+    pub async fn stop(self) -> Result<()> {
+        match self.stop {
+            Stop::Listener(task) => task.abort(),
+            Stop::Remote {
+                handle,
+                bind_host,
+                port,
+                map,
+            } => {
+                map.lock().unwrap_or_else(|p| p.into_inner()).remove(&port);
+                handle.cancel_tcpip_forward(&bind_host, port).await?;
             }
         }
+        Ok(())
     }
-
-    if !remote_map.is_empty() {
-        if let Some(rx) = session.take_events() {
-            tokio::spawn(remote_dispatcher(rx, remote_map));
-        }
-    }
-
-    Ok(infos)
 }
 
 /// Binds a local listener and forwards each connection to `dest_host:dest_port`
@@ -109,24 +186,9 @@ pub async fn forward_local(
     dest_host: String,
     dest_port: u16,
 ) -> Result<SocketAddr> {
-    let listener = TcpListener::bind((local_bind_host(bind_host), bind_port)).await?;
+    let listener = bind(bind_host, bind_port).await?;
     let local = listener.local_addr()?;
-    tokio::spawn(async move {
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                break;
-            };
-            let h = handle.clone();
-            let dhost = dest_host.clone();
-            tokio::spawn(async move {
-                let channel = match h.open_direct_tcpip(&dhost, dest_port, "127.0.0.1", 0).await {
-                    Ok(c) => c,
-                    Err(_) => return,
-                };
-                bridge(stream, channel).await;
-            });
-        }
-    });
+    tokio::spawn(serve_local(listener, handle, dest_host, dest_port));
     Ok(local)
 }
 
@@ -137,20 +199,51 @@ pub async fn forward_dynamic(
     bind_host: &str,
     bind_port: u16,
 ) -> Result<SocketAddr> {
-    let listener = TcpListener::bind((local_bind_host(bind_host), bind_port)).await?;
+    let listener = bind(bind_host, bind_port).await?;
     let local = listener.local_addr()?;
-    tokio::spawn(async move {
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                break;
-            };
-            let h = handle.clone();
-            tokio::spawn(async move {
-                let _ = handle_socks(stream, h).await;
-            });
-        }
-    });
+    tokio::spawn(serve_dynamic(listener, handle));
     Ok(local)
+}
+
+async fn serve_local(
+    listener: TcpListener,
+    handle: ClientHandle,
+    dest_host: String,
+    dest_port: u16,
+) {
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            break;
+        };
+        let h = handle.clone();
+        let dhost = dest_host.clone();
+        tokio::spawn(async move {
+            let channel = match h.open_direct_tcpip(&dhost, dest_port, "127.0.0.1", 0).await {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            bridge(stream, channel).await;
+        });
+    }
+}
+
+async fn serve_dynamic(listener: TcpListener, handle: ClientHandle) {
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            break;
+        };
+        let h = handle.clone();
+        tokio::spawn(async move {
+            let _ = handle_socks(stream, h).await;
+        });
+    }
+}
+
+async fn bind(bind_host: &str, bind_port: u16) -> Result<TcpListener> {
+    let host = local_bind_host(bind_host);
+    TcpListener::bind((host, bind_port))
+        .await
+        .map_err(|e| Error::Other(format!("listening on {host}:{bind_port}: {e}")))
 }
 
 /// A local listener with no bind address listens on loopback only, as
@@ -165,18 +258,19 @@ fn local_bind_host(bind_host: &str) -> &str {
 
 /// Consumes server-initiated `forwarded-tcpip` channels and bridges each to
 /// the local destination it maps to (by the port the server bound).
-async fn remote_dispatcher(
-    mut rx: UnboundedReceiver<ServerEvent>,
-    map: HashMap<u16, (String, u16)>,
-) {
+async fn remote_dispatcher(mut rx: UnboundedReceiver<ServerEvent>, map: RemoteMap) {
     while let Some(evt) = rx.recv().await {
         let ServerEvent::ForwardedTcpIp {
             channel,
             forwarded_port,
             ..
         } = evt;
-        if let Some((host, port)) = map.get(&(forwarded_port as u16)) {
-            let (host, port) = (host.clone(), *port);
+        let dest = map
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&(forwarded_port as u16))
+            .cloned();
+        if let Some((host, port)) = dest {
             tokio::spawn(async move {
                 let Ok(stream) = TcpStream::connect((host.as_str(), port)).await else {
                     return;

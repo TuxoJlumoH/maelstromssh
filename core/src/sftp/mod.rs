@@ -12,6 +12,7 @@ use crate::ssh::Session;
 
 /// Re-exported so front-ends can name the session type without depending on
 /// `russh_sftp` directly.
+pub use russh_sftp::client::fs::File;
 pub use russh_sftp::client::SftpSession;
 
 /// A single read buffer for streaming transfers.
@@ -20,8 +21,14 @@ const BUF_SIZE: usize = 64 * 1024;
 /// A directory entry in a front-end-friendly shape (no `russh` types).
 pub struct DirEntry {
     pub name: String,
+    /// A directory, or a symlink that points to one.
     pub is_dir: bool,
+    pub is_symlink: bool,
     pub size: u64,
+    /// Seconds since the Unix epoch, when the server reports it.
+    pub modified: Option<u32>,
+    /// Unix permission bits (e.g. `0o644`), when the server reports them.
+    pub permissions: Option<u32>,
 }
 
 /// Opens an SFTP subsystem channel on an existing session and wraps it in
@@ -83,14 +90,42 @@ pub async fn list(sftp: &SftpSession, path: &str) -> Result<Vec<DirEntry>> {
     let mut entries = Vec::new();
     for entry in sftp.read_dir(path).await.map_err(Error::Sftp)? {
         let meta = entry.metadata();
+        let name = entry.file_name();
+        let is_symlink = meta.file_type().is_symlink();
+        let is_dir = if is_symlink {
+            let target = format!("{}/{name}", path.trim_end_matches('/'));
+            sftp.metadata(target)
+                .await
+                .is_ok_and(|m| m.file_type().is_dir())
+        } else {
+            meta.file_type().is_dir()
+        };
         entries.push(DirEntry {
-            name: entry.file_name(),
-            is_dir: meta.file_type().is_dir(),
+            name,
+            is_dir,
+            is_symlink,
             size: meta.size.unwrap_or(0),
+            modified: meta.mtime,
+            permissions: meta.permissions.map(|p| p & 0o7777),
         });
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
+}
+
+/// Opens a remote file for streaming reads (e.g. to serve a download).
+pub async fn open_read(sftp: &SftpSession, path: &str) -> Result<File> {
+    sftp.open(path).await.map_err(Error::Sftp)
+}
+
+/// Creates or truncates a remote file for streaming writes.
+pub async fn open_write(sftp: &SftpSession, path: &str) -> Result<File> {
+    sftp.create(path).await.map_err(Error::Sftp)
+}
+
+/// The size of a remote file in bytes, following symlinks.
+pub async fn file_size(sftp: &SftpSession, path: &str) -> Result<Option<u64>> {
+    Ok(sftp.metadata(path).await.map_err(Error::Sftp)?.size)
 }
 
 /// Resolves `path` to an absolute remote path (handles `.`/`..`/symlinks).

@@ -1,7 +1,13 @@
 //! Parses OpenSSH-style `-L`/`-R`/`-D` forward specs into `ForwardRule`s.
 
-use anyhow::{bail, Context, Result};
-use vortexssh_core::config::{ForwardKind, ForwardRule};
+use super::{ForwardKind, ForwardRule};
+use crate::error::{Error, Result};
+
+macro_rules! bail {
+    ($($arg:tt)*) => {
+        return Err(Error::Config(format!($($arg)*)))
+    };
+}
 
 /// Parses a forward specification.
 ///
@@ -10,7 +16,7 @@ use vortexssh_core::config::{ForwardKind, ForwardRule};
 ///
 /// IPv6 addresses in the bind address are not supported (the `:` separator is
 /// ambiguous); an empty destination host means `127.0.0.1`.
-pub fn parse(spec: &str, kind: ForwardKind) -> Result<ForwardRule> {
+pub fn parse_forward(spec: &str, kind: ForwardKind) -> Result<ForwardRule> {
     let parts: Vec<&str> = spec.split(':').collect();
     match kind {
         ForwardKind::Dynamic => {
@@ -51,7 +57,7 @@ pub fn parse(spec: &str, kind: ForwardKind) -> Result<ForwardRule> {
 
 fn parse_port(s: &str) -> Result<u16> {
     s.parse::<u16>()
-        .with_context(|| format!("invalid port '{s}'"))
+        .map_err(|_| Error::Config(format!("invalid port '{s}'")))
 }
 
 #[cfg(test)]
@@ -60,7 +66,7 @@ mod tests {
 
     #[test]
     fn local_three_parts_defaults_bind() {
-        let r = parse("8080:localhost:80", ForwardKind::Local).unwrap();
+        let r = parse_forward("8080:localhost:80", ForwardKind::Local).unwrap();
         assert_eq!(r.kind, ForwardKind::Local);
         assert_eq!(r.bind_host, "");
         assert_eq!(r.bind_port, 8080);
@@ -70,7 +76,7 @@ mod tests {
 
     #[test]
     fn local_four_parts_with_bind() {
-        let r = parse("127.0.0.1:9000:10.0.0.1:3306", ForwardKind::Local).unwrap();
+        let r = parse_forward("127.0.0.1:9000:10.0.0.1:3306", ForwardKind::Local).unwrap();
         assert_eq!(r.bind_host, "127.0.0.1");
         assert_eq!(r.bind_port, 9000);
         assert_eq!(r.dest_host.as_deref(), Some("10.0.0.1"));
@@ -79,26 +85,26 @@ mod tests {
 
     #[test]
     fn empty_dest_host_defaults_to_localhost() {
-        let r = parse("8080::80", ForwardKind::Remote).unwrap();
+        let r = parse_forward("8080::80", ForwardKind::Remote).unwrap();
         assert_eq!(r.dest_host.as_deref(), Some("127.0.0.1"));
         assert_eq!(r.dest_port, Some(80));
     }
 
     #[test]
     fn dynamic_one_and_two_parts() {
-        let r = parse("1080", ForwardKind::Dynamic).unwrap();
+        let r = parse_forward("1080", ForwardKind::Dynamic).unwrap();
         assert_eq!(r.bind_host, "");
         assert_eq!(r.bind_port, 1080);
-        let r = parse("127.0.0.1:1080", ForwardKind::Dynamic).unwrap();
+        let r = parse_forward("127.0.0.1:1080", ForwardKind::Dynamic).unwrap();
         assert_eq!(r.bind_host, "127.0.0.1");
         assert_eq!(r.bind_port, 1080);
     }
 
     #[test]
     fn rejects_bad_specs() {
-        assert!(parse("8080", ForwardKind::Local).is_err());
-        assert!(parse("a:b:c:d:e", ForwardKind::Local).is_err());
-        assert!(parse("8080:host:notaport", ForwardKind::Local).is_err());
-        assert!(parse("", ForwardKind::Dynamic).is_err());
+        assert!(parse_forward("8080", ForwardKind::Local).is_err());
+        assert!(parse_forward("a:b:c:d:e", ForwardKind::Local).is_err());
+        assert!(parse_forward("8080:host:notaport", ForwardKind::Local).is_err());
+        assert!(parse_forward("", ForwardKind::Dynamic).is_err());
     }
 }

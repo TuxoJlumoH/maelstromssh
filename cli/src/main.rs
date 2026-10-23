@@ -6,7 +6,9 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::terminal;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use vortexssh_core::config::{AuthMethod, ForwardKind, ForwardRule, Profile, ProfileStore};
+use vortexssh_core::config::{
+    parse_forward, AuthMethod, ForwardKind, ForwardRule, Profile, ProfileStore,
+};
 use vortexssh_core::prompt::TtyPrompter;
 use vortexssh_core::ssh::{ChannelMsg, KnownHosts, Session};
 use vortexssh_core::target::{
@@ -15,9 +17,7 @@ use vortexssh_core::target::{
 use vortexssh_core::term::Terminal;
 use vortexssh_core::tunnel;
 
-mod forward;
 mod sftp;
-use forward::parse as parse_forward;
 use sftp::SftpOp;
 
 #[derive(Parser)]
