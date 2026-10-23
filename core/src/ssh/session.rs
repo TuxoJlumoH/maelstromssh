@@ -170,6 +170,11 @@ impl Session {
         Ok(())
     }
 
+    /// Whether the connection has gone away (closed by either side).
+    pub fn is_closed(&self) -> bool {
+        self.handle.is_closed()
+    }
+
     /// Clones the channel-opening handle, for long-lived background tasks
     /// (port forwarding) that outlive the borrow of the session.
     pub fn handle(&self) -> ClientHandle {
