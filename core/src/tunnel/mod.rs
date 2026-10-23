@@ -109,7 +109,7 @@ pub async fn forward_local(
     dest_host: String,
     dest_port: u16,
 ) -> Result<SocketAddr> {
-    let listener = TcpListener::bind((bind_host, bind_port)).await?;
+    let listener = TcpListener::bind((local_bind_host(bind_host), bind_port)).await?;
     let local = listener.local_addr()?;
     tokio::spawn(async move {
         loop {
@@ -137,7 +137,7 @@ pub async fn forward_dynamic(
     bind_host: &str,
     bind_port: u16,
 ) -> Result<SocketAddr> {
-    let listener = TcpListener::bind((bind_host, bind_port)).await?;
+    let listener = TcpListener::bind((local_bind_host(bind_host), bind_port)).await?;
     let local = listener.local_addr()?;
     tokio::spawn(async move {
         loop {
@@ -151,6 +151,16 @@ pub async fn forward_dynamic(
         }
     });
     Ok(local)
+}
+
+/// A local listener with no bind address listens on loopback only, as
+/// OpenSSH does by default (`GatewayPorts no`).
+fn local_bind_host(bind_host: &str) -> &str {
+    if bind_host.is_empty() {
+        "127.0.0.1"
+    } else {
+        bind_host
+    }
 }
 
 /// Consumes server-initiated `forwarded-tcpip` channels and bridges each to
