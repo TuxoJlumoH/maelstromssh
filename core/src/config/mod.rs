@@ -6,7 +6,7 @@ mod profile;
 mod ssh_config;
 mod store;
 
-pub use forward_spec::parse_forward;
+pub use forward_spec::{forward_spec, parse_forward};
 pub use profile::{AuthMethod, ForwardKind, ForwardRule, Profile, TerminalSettings};
 pub use ssh_config::{HostConfig, SshConfig};
-pub use store::ProfileStore;
+pub use store::{check_name as check_profile_name, ProfileStore};

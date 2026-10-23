@@ -137,7 +137,7 @@ pub async fn connect_and_run(
 
 /// Drives an already-connected session's shell channel.
 async fn run_connected(
-    mut session: Session,
+    session: Session,
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
     evt_tx: &mpsc::UnboundedSender<Evt>,
     notify: &egui::Context,

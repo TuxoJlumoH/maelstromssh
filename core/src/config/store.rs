@@ -41,7 +41,7 @@ impl ProfileStore {
     }
 
     pub fn load(&self, name: &str) -> Result<Profile> {
-        let path = self.profile_path(name);
+        let path = self.profile_path(name)?;
         let text = std::fs::read_to_string(&path).map_err(|e| {
             Error::Config(match e.kind() {
                 std::io::ErrorKind::NotFound => {
@@ -54,8 +54,8 @@ impl ProfileStore {
     }
 
     pub fn save(&self, profile: &Profile) -> Result<()> {
+        let path = self.profile_path(&profile.name)?;
         std::fs::create_dir_all(&self.dir)?;
-        let path = self.profile_path(&profile.name);
         let text = toml::to_string_pretty(profile)
             .map_err(|e| Error::Config(format!("serializing profile: {e}")))?;
         std::fs::write(path, text)?;
@@ -63,12 +63,31 @@ impl ProfileStore {
     }
 
     pub fn delete(&self, name: &str) -> Result<()> {
-        std::fs::remove_file(self.profile_path(name))?;
+        std::fs::remove_file(self.profile_path(name)?)?;
         Ok(())
     }
 
-    fn profile_path(&self, name: &str) -> PathBuf {
-        self.dir.join(format!("{name}.toml"))
+    fn profile_path(&self, name: &str) -> Result<PathBuf> {
+        check_name(name)?;
+        Ok(self.dir.join(format!("{name}.toml")))
+    }
+}
+
+/// Profile names become file names, so they are limited to letters, digits,
+/// `.`, `_` and `-`, and may not start with a dot.
+pub fn check_name(name: &str) -> Result<()> {
+    let ok = !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Config(format!(
+            "invalid profile name '{name}': use letters, digits, '.', '_' and '-'"
+        )))
     }
 }
 
@@ -114,6 +133,19 @@ mod tests {
         let p = ProfileStore::new(&tmp).load("old").unwrap();
         assert_eq!(p.port, 22);
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn rejects_unsafe_names() {
+        for bad in ["", "../x", "a/b", ".hidden", "a b", "x\0"] {
+            assert!(check_name(bad).is_err(), "{bad:?}");
+        }
+        for good in ["prod-web-1", "db_2", "host.example.com"] {
+            check_name(good).unwrap();
+        }
+        assert!(ProfileStore::new("/nonexistent")
+            .load("../etc/passwd")
+            .is_err());
     }
 
     fn tempdir() -> PathBuf {

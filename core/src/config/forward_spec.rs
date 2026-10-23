@@ -55,6 +55,22 @@ pub fn parse_forward(spec: &str, kind: ForwardKind) -> Result<ForwardRule> {
     }
 }
 
+/// The spec text for a rule, as accepted by [`parse_forward`] (without the
+/// `-L`/`-R`/`-D` flag).
+pub fn forward_spec(rule: &ForwardRule) -> String {
+    let mut spec = String::new();
+    if !rule.bind_host.is_empty() {
+        spec.push_str(&rule.bind_host);
+        spec.push(':');
+    }
+    spec.push_str(&rule.bind_port.to_string());
+    if rule.kind != ForwardKind::Dynamic {
+        let host = rule.dest_host.as_deref().unwrap_or("127.0.0.1");
+        spec.push_str(&format!(":{host}:{}", rule.dest_port.unwrap_or(0)));
+    }
+    spec
+}
+
 fn parse_port(s: &str) -> Result<u16> {
     s.parse::<u16>()
         .map_err(|_| Error::Config(format!("invalid port '{s}'")))
@@ -98,6 +114,18 @@ mod tests {
         let r = parse_forward("127.0.0.1:1080", ForwardKind::Dynamic).unwrap();
         assert_eq!(r.bind_host, "127.0.0.1");
         assert_eq!(r.bind_port, 1080);
+    }
+
+    #[test]
+    fn spec_round_trips() {
+        for (spec, kind) in [
+            ("8080:localhost:80", ForwardKind::Local),
+            ("127.0.0.1:9000:10.0.0.1:3306", ForwardKind::Remote),
+            ("1080", ForwardKind::Dynamic),
+            ("0.0.0.0:1080", ForwardKind::Dynamic),
+        ] {
+            assert_eq!(forward_spec(&parse_forward(spec, kind).unwrap()), spec);
+        }
     }
 
     #[test]

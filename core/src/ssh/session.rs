@@ -122,12 +122,7 @@ impl Session {
     /// Opens an interactive shell channel with a PTY, matching the given
     /// terminal type and size. Returns the raw channel; driving stdin/stdout
     /// I/O and resize events is the caller's responsibility (CLI/TUI layer).
-    pub async fn open_shell(
-        &mut self,
-        term_type: &str,
-        cols: u32,
-        rows: u32,
-    ) -> Result<Channel<Msg>> {
+    pub async fn open_shell(&self, term_type: &str, cols: u32, rows: u32) -> Result<Channel<Msg>> {
         let channel = self
             .handle
             .channel_open_session()
@@ -143,7 +138,7 @@ impl Session {
 
     /// Opens a channel and execs a single command (no PTY) — used for
     /// one-shot, non-interactive operations.
-    pub async fn open_exec(&mut self, command: &str) -> Result<Channel<Msg>> {
+    pub async fn open_exec(&self, command: &str) -> Result<Channel<Msg>> {
         let channel = self
             .handle
             .channel_open_session()
@@ -154,7 +149,7 @@ impl Session {
     }
 
     /// Opens a channel and requests the given SSH subsystem (e.g. "sftp").
-    pub async fn open_subsystem(&mut self, name: &str) -> Result<Channel<Msg>> {
+    pub async fn open_subsystem(&self, name: &str) -> Result<Channel<Msg>> {
         let channel = self
             .handle
             .channel_open_session()
@@ -167,7 +162,7 @@ impl Session {
         Ok(channel)
     }
 
-    pub async fn disconnect(&mut self) -> Result<()> {
+    pub async fn disconnect(&self) -> Result<()> {
         self.handle
             .disconnect(russh::Disconnect::ByApplication, "", "English")
             .await

@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
         .next()
         .expect("usage: sftp_smoke <host> <port> <user> <key_path>");
 
-    let mut session = Session::connect(
+    let session = Session::connect(
         &host,
         port,
         &user,
@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    let sftp = sftp::open(&mut session).await?;
+    let sftp = sftp::open(&session).await?;
     let cwd = sftp.canonicalize(".").await?;
     println!("cwd: {cwd}");
 

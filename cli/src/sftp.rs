@@ -34,7 +34,7 @@ pub enum SftpOp {
 }
 
 /// Runs a single scriptable operation against a fresh SFTP session.
-pub async fn run(session: &mut Session, op: SftpOp) -> Result<()> {
+pub async fn run(session: &Session, op: SftpOp) -> Result<()> {
     let sftp = sftp::open(session).await?;
     match op {
         SftpOp::Get { remote, local } => {
@@ -100,7 +100,7 @@ async fn do_rename(sftp: &SftpSession, from: &str, to: &str) -> Result<()> {
 
 /// Runs the interactive SFTP shell: a prompt-driven REPL that keeps a single
 /// SFTP session open and tracks a remote working directory.
-pub async fn shell(session: &mut Session) -> Result<()> {
+pub async fn shell(session: &Session) -> Result<()> {
     let sftp = sftp::open(session).await?;
     let mut cwd = sftp::canonicalize(&sftp, ".").await?;
     eprintln!("Connected. Type 'help' for a list of commands.");

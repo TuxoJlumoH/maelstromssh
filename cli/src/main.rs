@@ -152,10 +152,10 @@ async fn main() -> Result<()> {
             ProfileCmd::Rm { name } => profile_rm(name),
         },
         Command::Sftp { target, operation } => {
-            let mut session = connect_session(&target.resolve()?).await?;
+            let session = connect_session(&target.resolve()?).await?;
             let result = match operation {
-                Some(op) => sftp::run(&mut session, op).await,
-                None => sftp::shell(&mut session).await,
+                Some(op) => sftp::run(&session, op).await,
+                None => sftp::shell(&session).await,
             };
             session.disconnect().await.ok();
             result

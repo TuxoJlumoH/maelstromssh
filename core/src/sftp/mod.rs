@@ -33,7 +33,7 @@ pub struct DirEntry {
 
 /// Opens an SFTP subsystem channel on an existing session and wraps it in
 /// `russh_sftp`'s client, which provides `read_dir`, `open`, `metadata`, etc.
-pub async fn open(session: &mut Session) -> Result<SftpSession> {
+pub async fn open(session: &Session) -> Result<SftpSession> {
     let channel = session.open_subsystem("sftp").await?;
     SftpSession::new(channel.into_stream())
         .await
