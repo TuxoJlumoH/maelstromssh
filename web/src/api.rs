@@ -261,8 +261,19 @@ pub async fn upload(
         .conn(id)
         .ok_or((StatusCode::NOT_FOUND, "connection closed".into()))?;
     let sftp = conn.sftp().await.map_err(server_error)?;
-    let temp = temp_upload_path(&q.path).map_err(bad_request)?;
+    // Write next to the file a symlink points to, so the final rename stays
+    // in one folder and file system.
+    let dest = sftp::resolve_link(sftp, &q.path)
+        .await
+        .map_err(bad_request)?;
+    let temp = temp_upload_path(&dest).map_err(bad_request)?;
     let mut file = sftp::open_write(sftp, &temp).await.map_err(bad_request)?;
+    // Removes the temporary file unless the upload completes, also when the
+    // browser goes away and this handler is dropped mid-upload.
+    let mut guard = TempGuard {
+        conn: Some(conn.clone()),
+        path: temp.clone(),
+    };
     let stream = body.into_data_stream().map_err(std::io::Error::other);
     let mut reader = StreamReader::new(stream);
     let copied = async {
@@ -272,18 +283,38 @@ pub async fn upload(
     }
     .await;
     drop(file);
-    let finished = match copied {
-        Ok(written) => sftp::replace(sftp, &temp, &q.path)
-            .await
-            .map(|()| written)
-            .map_err(bad_request),
-        Err(e) => Err(server_error(format!("upload interrupted: {e}"))),
+    let written = match copied {
+        Ok(written) => written,
+        Err(e) => return Err(server_error(format!("upload interrupted: {e}"))),
     };
-    if finished.is_err() {
-        let _ = sftp::remove_file(sftp, &temp).await;
-    }
-    Ok(Json(json!({ "written": finished? })))
+    sftp::replace(sftp, &temp, &dest)
+        .await
+        .map_err(bad_request)?;
+    guard.conn = None;
+    Ok(Json(json!({ "written": written })))
 }
+
+struct TempGuard {
+    conn: Option<Arc<crate::conn::Conn>>,
+    path: String,
+}
+
+impl Drop for TempGuard {
+    fn drop(&mut self) {
+        let Some(conn) = self.conn.take() else {
+            return;
+        };
+        let path = std::mem::take(&mut self.path);
+        tokio::spawn(async move {
+            if let Ok(sftp) = conn.sftp().await {
+                let _ = sftp::remove_file(sftp, &path).await;
+            }
+        });
+    }
+}
+
+/// The longest part of the original name kept in a temporary name.
+const MAX_TEMP_STEM: usize = 200;
 
 /// A hidden, unique name in the same folder as `path` (so the final rename
 /// stays on one file system).
@@ -298,7 +329,13 @@ fn temp_upload_path(path: &str) -> Result<String, String> {
     let mut suffix = [0u8; 6];
     getrandom::fill(&mut suffix).map_err(|e| e.to_string())?;
     let suffix: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
-    let temp = format!(".{name}.vortexssh-{suffix}.part");
+    // Keep the temporary name (and its ".old" backup) under the usual
+    // 255-byte limit for file names.
+    let mut end = name.len().min(MAX_TEMP_STEM);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    let temp = format!(".{}.vortexssh-{suffix}.part", &name[..end]);
     Ok(if path.contains('/') {
         format!("{dir}/{temp}")
     } else {
@@ -327,6 +364,11 @@ mod tests {
         assert_ne!(temp, temp_upload_path("/home/me/a.txt").unwrap());
         assert!(temp_upload_path("a.txt").unwrap().starts_with(".a.txt."));
         assert!(temp_upload_path("/top").unwrap().starts_with("/.top."));
+        let long = format!("/d/{}", "ü".repeat(127)); // 254 bytes
+        let temp = temp_upload_path(&long).unwrap();
+        let name = temp.rsplit_once('/').unwrap().1;
+        assert!(name.len() + ".old".len() <= 255, "{}", name.len());
+        assert!(name.starts_with(".üü"));
         for bad in ["/home/me/", "", "/x/..", "."] {
             assert!(temp_upload_path(bad).is_err(), "{bad:?}");
         }

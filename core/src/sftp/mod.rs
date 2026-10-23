@@ -149,6 +149,31 @@ pub async fn rename(sftp: &SftpSession, from: &str, to: &str) -> Result<()> {
     sftp.rename(from, to).await.map_err(Error::Sftp)
 }
 
+/// Follows symlinks at `path` (also a dangling one) to the path that
+/// writing to it would really create or replace. Other paths are returned
+/// as they are.
+pub async fn resolve_link(sftp: &SftpSession, path: &str) -> Result<String> {
+    let mut path = path.to_string();
+    for _ in 0..40 {
+        match sftp.symlink_metadata(path.as_str()).await {
+            Ok(meta) if meta.file_type().is_symlink() => {}
+            _ => return Ok(path),
+        }
+        let target = sftp.read_link(path.as_str()).await.map_err(Error::Sftp)?;
+        path = if target.starts_with('/') {
+            target
+        } else {
+            match path.rsplit_once('/') {
+                Some((dir, _)) => format!("{dir}/{target}"),
+                None => target,
+            }
+        };
+    }
+    Err(Error::Other(format!(
+        "{path}: too many levels of symbolic links"
+    )))
+}
+
 /// Moves a finished upload at `temp` to `dest`, replacing `dest` if it
 /// exists and keeping its permission bits. A symlink at `dest` is followed,
 /// so the file it points to is replaced. SFTP v3 renames do not overwrite,
