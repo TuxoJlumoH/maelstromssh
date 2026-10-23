@@ -1,7 +1,7 @@
 # Maintainer: TuxoJlumoH <smokie.bg@gmail.com>
 
 pkgname=vortexssh
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='SSH/SFTP client with CLI, terminal UI and graphical front-ends'
 arch=('x86_64' 'aarch64')
