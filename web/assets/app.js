@@ -8,6 +8,8 @@
 
 const $ = (selector, root = document) => root.querySelector(selector);
 
+const SEND_CHUNK = 64 * 1024;
+
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props)) {
@@ -288,8 +290,10 @@ class Tab {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(message));
   }
 
+  /// Large pastes go in chunks: the server refuses messages over 1 MiB.
   sendBytes(bytes) {
-    if (this.conn && this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(bytes);
+    if (!(this.conn && this.ws && this.ws.readyState === WebSocket.OPEN)) return;
+    for (let i = 0; i < bytes.length; i += SEND_CHUNK) this.ws.send(bytes.subarray(i, i + SEND_CHUNK));
   }
 
   /// Sends a request that the server answers with a `reply`.

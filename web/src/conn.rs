@@ -309,7 +309,14 @@ async fn run(app: Arc<App>, socket: WebSocket) {
     let mut session_task = None;
     let cancel = CancellationToken::new();
 
-    while let Some(Ok(msg)) = stream.next().await {
+    while let Some(msg) = stream.next().await {
+        let msg = match msg {
+            Ok(msg) => msg,
+            Err(e) => {
+                tracing::warn!("browser connection failed: {e}");
+                break;
+            }
+        };
         let text = match msg {
             Message::Binary(bytes) => {
                 let _ = input_tx.send(Input::Data(bytes.to_vec()));
