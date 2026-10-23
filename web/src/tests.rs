@@ -485,6 +485,48 @@ async fn profiles_and_hosts() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::NO_CONTENT);
 
+    // Telnet and raw profiles: Telnet defaults to port 23, raw needs one.
+    let form = json!({ "name": "sw", "protocol": "telnet", "target": "switch.lan" });
+    let (status, saved) = json_of(
+        call(Method::POST, "/api/profiles", Some(form))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(
+        saved,
+        json!({ "name": "sw", "protocol": "telnet", "host": "switch.lan", "port": 23 })
+    );
+    let form = json!({ "name": "sw", "original": "sw", "protocol": "raw", "target": "10.0.0.2", "port": 4001 });
+    let (status, saved) = json_of(
+        call(Method::POST, "/api/profiles", Some(form))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["protocol"], "raw");
+    assert_eq!(saved["port"], 4001);
+    for form in [
+        json!({ "name": "r2", "protocol": "raw", "target": "10.0.0.2" }),
+        json!({ "name": "r3", "protocol": "telnet", "target": "" }),
+        json!({ "name": "r4", "protocol": "telnet", "target": "root@box" }),
+        json!({ "name": "r5", "protocol": "gopher", "target": "box" }),
+    ] {
+        let (status, body) = json_of(
+            call(Method::POST, "/api/profiles", Some(form.clone()))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(status.is_client_error(), "{form} -> {status} {body}");
+    }
+    let r = call(Method::DELETE, "/api/profiles/sw", None)
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+
     let (status, ports) =
         json_of(call(Method::GET, "/api/serial-ports", None).await.unwrap()).await;
     assert_eq!(status, StatusCode::OK, "{ports}");

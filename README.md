@@ -5,7 +5,7 @@
 <h1 align="center">VortexSSH</h1>
 
 <p align="center">
-  An SSH/SFTP and serial console client for Linux, written in Rust — use it from the command line, a full-screen
+  An SSH/SFTP, serial, Telnet and raw TCP client for Linux, written in Rust — use it from the command line, a full-screen
   terminal UI, a desktop window or your web browser, all driven by one shared engine.
 </p>
 
@@ -15,6 +15,7 @@
 - **SFTP** — scriptable `get`/`put`/`ls`/`rm`/`mkdir`/`rename`, an interactive shell, and a drag-and-drop file browser in the web UI.
 - **Port forwarding** — local, remote, and dynamic (SOCKS5 proxy); the web UI adds and stops forwards while connected.
 - **Serial / COM ports** — open `/dev/ttyUSB0`, `/dev/ttyACM0`, `/dev/ttyS0` etc. with any baud rate, data bits, parity, stop bits and flow control, and send a break; in the CLI and the web UI.
+- **Telnet and raw TCP** — for old switches, routers and serial-over-IP adapters: Telnet option negotiation (window size, terminal type, break), or bytes passed through unchanged.
 - **Key generation** — Ed25519 and RSA (configurable size).
 - **Full terminal emulator** — 256-color + truecolor, scrollback, reflow-on-resize, scroll regions, alternate screen, mouse reporting, bracketed paste.
 - **Profiles** — saved connection settings, including port forwards.
@@ -23,7 +24,7 @@
 
 | Binary | What it is |
 |---|---|
-| `vortexssh` | Command line — connect, `serial`, `sftp`, `profile`, `keygen` |
+| `vortexssh` | Command line — connect, `serial`, `telnet`, `raw`, `sftp`, `profile`, `keygen` |
 | `vortexssh-tui` | Full-screen terminal UI (`ratatui`) |
 | `vortexssh-gui` | Desktop window (`egui`/`eframe`) |
 | `vortexssh-web` | Browser UI served on 127.0.0.1 (`axum` + `xterm.js`) |
@@ -68,6 +69,8 @@ vortexssh profile add mybox user@host -p 2222
 vortexssh serial --list                           # serial ports on this machine
 vortexssh serial /dev/ttyUSB0 -b 115200           # serial console (Ctrl-] q quits)
 vortexssh profile add router /dev/ttyUSB0 --serial -b 9600
+vortexssh telnet 192.168.1.1                      # Telnet (port 23; not encrypted)
+vortexssh raw 192.168.1.50 4001                   # raw TCP
 ```
 
 Serial devices usually belong to the `uucp` group on Arch (`dialout` on
@@ -98,8 +101,8 @@ Each browser tab is one SSH connection with:
 - a file browser — upload (button or drag and drop), download, rename, delete, new folder;
 - port forwards you can add and stop while connected.
 
-or one serial port (choose *Serial* in *New connection*), with a terminal and
-a *Send break* button.
+or one serial port, Telnet or raw TCP connection (choose the type in *New
+connection*), with a terminal and, for serial and Telnet, a *Send break* button.
 
 Saved profiles and your `~/.ssh/config` hosts are listed in the sidebar, and
 profiles can be created and edited there. Login prompts appear as dialogs.

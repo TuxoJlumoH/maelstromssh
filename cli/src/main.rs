@@ -16,6 +16,7 @@ use vortexssh_core::ssh::{ChannelMsg, KnownHosts, Session};
 use vortexssh_core::target::{
     auth_from_flags, local_user, split_target, AuthChoice, Target, TargetArgs,
 };
+use vortexssh_core::tcp::{Filter, TcpLine};
 use vortexssh_core::term::Terminal;
 use vortexssh_core::tunnel;
 
@@ -26,7 +27,7 @@ use sftp::SftpOp;
 #[command(
     name = "vortexssh",
     version,
-    about = "An SSH/SFTP and serial console client"
+    about = "An SSH/SFTP client with serial, Telnet and raw TCP connections"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -36,7 +37,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Connect to a host and open an interactive shell (or open a saved
-    /// serial profile).
+    /// serial, Telnet or raw profile).
     Connect {
         #[command(flatten)]
         target: TargetArgs,
@@ -51,7 +52,7 @@ enum Command {
         dynamic: Vec<String>,
     },
     /// Open a serial (COM) port as a terminal, e.g. a router's console.
-    #[command(after_help = SERIAL_KEYS)]
+    #[command(after_help = LINE_KEYS)]
     Serial {
         /// The device, e.g. /dev/ttyUSB0. Omit with --list.
         #[arg(required_unless_present = "list")]
@@ -61,6 +62,21 @@ enum Command {
         /// List the serial ports on this machine and exit.
         #[arg(short, long)]
         list: bool,
+    },
+    /// Connect over Telnet (not encrypted), e.g. to an old switch.
+    #[command(after_help = LINE_KEYS)]
+    Telnet {
+        host: String,
+        /// Default 23.
+        #[arg(default_value_t = 23)]
+        port: u16,
+    },
+    /// Open a raw TCP connection: bytes go both ways unchanged.
+    #[command(after_help = LINE_KEYS)]
+    Raw {
+        host: String,
+        #[arg(value_parser = clap::value_parser!(u16).range(1..))]
+        port: u16,
     },
     /// Manage saved connection profiles.
     Profile {
@@ -92,7 +108,7 @@ enum Command {
     },
 }
 
-const SERIAL_KEYS: &str = "While connected: Ctrl-] then q quits, Ctrl-] then b sends a break, \
+const LINE_KEYS: &str = "While connected: Ctrl-] then q quits, Ctrl-] then b sends a break, \
 Ctrl-] twice sends Ctrl-] itself.";
 
 /// Serial line settings. The defaults are 9600 8N1 without flow control.
@@ -134,8 +150,14 @@ enum ProfileCmd {
         /// host or user@host; with --serial, the device (e.g. /dev/ttyUSB0)
         target: String,
         /// Save a serial port profile; set the line with -b, --parity etc.
-        #[arg(long, conflicts_with_all = ["user", "port", "auth", "identity", "local", "remote", "dynamic"])]
+        #[arg(long, conflicts_with_all = ["user", "port", "auth", "identity", "local", "remote", "dynamic", "telnet", "raw"])]
         serial: bool,
+        /// Save a Telnet profile (port 23 unless -p is given).
+        #[arg(long, conflicts_with_all = ["user", "auth", "identity", "local", "remote", "dynamic", "raw"])]
+        telnet: bool,
+        /// Save a raw TCP profile (needs -p).
+        #[arg(long, requires = "port", conflicts_with_all = ["user", "auth", "identity", "local", "remote", "dynamic"])]
+        raw: bool,
         #[command(flatten)]
         line: LineArgs,
         #[arg(short, long)]
@@ -197,8 +219,16 @@ async fn main() -> Result<()> {
                     }
                     open_serial(&target.host, target.serial.unwrap_or_default()).await
                 }
+                Protocol::Telnet | Protocol::Raw => {
+                    if !forwards.is_empty() {
+                        bail!("port forwards need an SSH connection");
+                    }
+                    open_tcp(target.protocol, &target.host, target.port).await
+                }
             }
         }
+        Command::Telnet { host, port } => open_tcp(Protocol::Telnet, &host, port).await,
+        Command::Raw { host, port } => open_tcp(Protocol::Raw, &host, port).await,
         Command::Serial { device, line, list } => match device {
             Some(device) if !list => open_serial(&device, line.into()).await,
             _ => serial_list(),
@@ -208,6 +238,8 @@ async fn main() -> Result<()> {
                 name,
                 target,
                 serial,
+                telnet,
+                raw,
                 line,
                 user,
                 port,
@@ -219,6 +251,14 @@ async fn main() -> Result<()> {
             } => {
                 if serial {
                     return profile_add_serial(name, target, line.into());
+                }
+                if telnet || raw {
+                    let protocol = if telnet {
+                        Protocol::Telnet
+                    } else {
+                        Protocol::Raw
+                    };
+                    return profile_add_tcp(name, protocol, target, port);
                 }
                 let forwards = parse_forwards(local, remote, dynamic)?;
                 profile_add(name, target, user, port, auth, identity, forwards)
@@ -374,21 +414,66 @@ fn serial_list() -> Result<()> {
     Ok(())
 }
 
-/// Ctrl-], the escape key while a serial port is open.
+/// Ctrl-], the escape key while a serial port or Telnet/raw connection
+/// is open.
 const ESCAPE: u8 = 0x1d;
 
 async fn open_serial(device: &str, settings: SerialSettings) -> Result<()> {
     let line = serial::Line::open(device, &settings)?;
-    eprintln!("Connected to {device} ({settings}). {SERIAL_KEYS}");
+    eprintln!("Connected to {device} ({settings}). {LINE_KEYS}");
+    let link = Link {
+        reader: Box::new(line.reader),
+        writer: Box::new(line.writer),
+        filter: Filter::Raw,
+        breaker: Some(line.breaker),
+        what: "the serial port",
+    };
+    run_link(link).await?;
+    eprintln!("\r\nDisconnected from {device}.");
+    Ok(())
+}
+
+async fn open_tcp(protocol: Protocol, host: &str, port: u16) -> Result<()> {
+    let size = terminal::size().unwrap_or((80, 24));
+    let term_type = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());
+    let line = TcpLine::connect(protocol, host, port, &term_type, size).await?;
+    if protocol == Protocol::Telnet {
+        eprintln!("Connected to {host}:{port} (Telnet, not encrypted). {LINE_KEYS}");
+    } else {
+        eprintln!("Connected to {host}:{port} (raw TCP). {LINE_KEYS}");
+    }
+    let link = Link {
+        reader: Box::new(line.reader),
+        writer: Box::new(line.writer),
+        filter: line.filter,
+        breaker: None,
+        what: "the connection",
+    };
+    run_link(link).await?;
+    eprintln!("\r\nConnection to {host} closed.");
+    Ok(())
+}
+
+/// A terminal over a byte stream: a serial port, Telnet or raw TCP.
+struct Link {
+    reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+    writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+    filter: Filter,
+    /// Serial ports send a break on the line; Telnet sends IAC BREAK.
+    breaker: Option<serial::Breaker>,
+    /// "the serial port", for messages.
+    what: &'static str,
+}
+
+async fn run_link(link: Link) -> Result<()> {
     let raw = std::io::stdin().is_terminal();
     if raw {
         terminal::enable_raw_mode().context("enabling raw terminal mode")?;
     }
-    let result = pump_serial_io(line).await;
+    let result = pump_link_io(link).await;
     if raw {
         terminal::disable_raw_mode().ok();
     }
-    eprintln!("\r\nDisconnected from {device}.");
     result
 }
 
@@ -399,14 +484,16 @@ enum Escaped {
     Help,
 }
 
-async fn pump_serial_io(line: serial::Line) -> Result<()> {
-    let serial::Line {
+async fn pump_link_io(link: Link) -> Result<()> {
+    let Link {
         mut reader,
         mut writer,
+        mut filter,
         breaker,
-    } = line;
-    // Writing may wait for the device (flow control); it must not stop
-    // output from being read.
+        what,
+    } = link;
+    // Writing may wait for the device (flow control) or the network; it
+    // must not stop output from being read.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     let mut typing = tokio::spawn(async move {
         while let Some(bytes) = rx.recv().await {
@@ -421,6 +508,7 @@ async fn pump_serial_io(line: serial::Line) -> Result<()> {
     let mut input = [0u8; 4096];
     let mut output = [0u8; 4096];
     let mut escaped = false;
+    let mut resize = resize::stream();
     loop {
         tokio::select! {
             r = stdin.read(&mut input) => {
@@ -448,34 +536,55 @@ async fn pump_serial_io(line: serial::Line) -> Result<()> {
                         break;
                     }
                 }
-                if !send.is_empty() && tx.send(send).await.is_err() {
+                if !send.is_empty() && tx.send(filter.encode(&send)).await.is_err() {
                     break;
                 }
                 match action {
                     Some(Escaped::Quit) => break,
                     Some(Escaped::Break) => {
-                        let breaker = breaker.clone();
-                        match tokio::task::spawn_blocking(move || breaker.send()).await? {
-                            Ok(()) => eprint!("\r\n[break sent]\r\n"),
-                            Err(e) => eprint!("\r\n[could not send a break: {e}]\r\n"),
+                        if let Some(breaker) = breaker.clone() {
+                            match tokio::task::spawn_blocking(move || breaker.send()).await? {
+                                Ok(()) => eprint!("\r\n[break sent]\r\n"),
+                                Err(e) => eprint!("\r\n[could not send a break: {e}]\r\n"),
+                            }
+                        } else if let Some(brk) = filter.brk() {
+                            if tx.send(brk).await.is_err() {
+                                break;
+                            }
+                            eprint!("\r\n[break sent]\r\n");
+                        } else {
+                            eprint!("\r\n[raw connections have no break signal]\r\n");
                         }
                     }
-                    Some(Escaped::Help) => eprint!("\r\n[{SERIAL_KEYS}]\r\n"),
+                    Some(Escaped::Help) => eprint!("\r\n[{LINE_KEYS}]\r\n"),
                     None => {}
                 }
             }
             r = reader.read(&mut output) => {
                 let n = match r {
-                    Ok(0) => bail!("the serial port closed"),
+                    Ok(0) => break,
                     Ok(n) => n,
-                    Err(e) => bail!("reading the serial port: {e}"),
+                    Err(e) => bail!("reading {what}: {e}"),
                 };
-                stdout.write_all(&output[..n]).await?;
+                let (mut data, mut reply) = (Vec::with_capacity(n), Vec::new());
+                filter.receive(&output[..n], &mut data, &mut reply);
+                if !reply.is_empty() && tx.send(reply).await.is_err() {
+                    break;
+                }
+                stdout.write_all(&data).await?;
                 stdout.flush().await?;
+            }
+            _ = resize::wait(&mut resize) => {
+                let (cols, rows) = terminal::size().unwrap_or((80, 24));
+                if let Some(msg) = filter.resize(cols, rows) {
+                    if tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
             }
             done = &mut typing => {
                 match done {
-                    Ok(Err(e)) => bail!("writing to the serial port: {e}"),
+                    Ok(Err(e)) => bail!("writing to {what}: {e}"),
                     _ => break,
                 }
             }
@@ -559,6 +668,29 @@ fn profile_add_serial(name: String, device: String, settings: SerialSettings) ->
     Ok(())
 }
 
+fn profile_add_tcp(
+    name: String,
+    protocol: Protocol,
+    host: String,
+    port: Option<u16>,
+) -> Result<()> {
+    let Some(port) = port.or(protocol.default_port()).filter(|&p| p > 0) else {
+        bail!("give the port with -p");
+    };
+    if host.is_empty() || host.contains('@') {
+        bail!("give a host name or address, without a user");
+    }
+    let store = ProfileStore::default_location()?;
+    store.save(&Profile {
+        protocol,
+        host,
+        port,
+        ..Profile::new(name.clone())
+    })?;
+    println!("Saved profile '{name}'");
+    Ok(())
+}
+
 fn profile_list() -> Result<()> {
     let store = ProfileStore::default_location()?;
     let names = store.list()?;
@@ -581,6 +713,16 @@ fn profile_show(name: String) -> Result<()> {
         println!("name:    {name}");
         println!("serial:  {}", p.host);
         println!("line:    {}", p.serial.unwrap_or_default());
+        return Ok(());
+    }
+    if p.protocol.is_tcp() {
+        println!("name:    {name}");
+        println!(
+            "{:<8} {}:{}",
+            format!("{}:", p.protocol.name()),
+            p.host,
+            p.port
+        );
         return Ok(());
     }
     let auth = match &p.auth {

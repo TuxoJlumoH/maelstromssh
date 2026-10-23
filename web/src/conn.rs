@@ -1,10 +1,11 @@
-//! One browser tab = one WebSocket = one SSH connection or serial port.
+//! One browser tab = one WebSocket = one SSH connection, serial port, or
+//! Telnet or raw TCP connection.
 //!
 //! The socket carries terminal bytes as binary frames and everything else
 //! as JSON text frames:
 //!
 //! - browser → server: `connect`, `answer` (to a login prompt), `resize`,
-//!   `break` (serial only), `sftp` and `forward_add` / `forward_stop`
+//!   `break` (serial and Telnet), `sftp` and `forward_add` / `forward_stop`
 //!   requests (each with an `id` that the `reply` echoes);
 //! - server → browser: `ask` (a login prompt) and `ask_cancel` (it timed
 //!   out), `warning`, `ready`, `reply`, `forwards` (the current list) and
@@ -35,6 +36,7 @@ use vortexssh_core::serial::Line;
 use vortexssh_core::sftp::{self, SftpSession};
 use vortexssh_core::ssh::{ChannelMsg, KnownHosts, Session};
 use vortexssh_core::target::{Target, TargetArgs};
+use vortexssh_core::tcp::TcpLine;
 use vortexssh_core::tunnel::{ActiveForward, ForwardInfo, Forwarder};
 
 use crate::App;
@@ -156,7 +158,7 @@ enum Input {
         cols: u32,
         rows: u32,
     },
-    /// A serial break; the reply goes to request `id`.
+    /// A serial or Telnet break; the reply goes to request `id`.
     Break(u64),
 }
 
@@ -175,6 +177,9 @@ enum In {
         /// Open a serial port instead of an SSH connection.
         #[serde(default)]
         serial: Option<SerialForm>,
+        /// Open a Telnet or raw TCP connection instead.
+        #[serde(default)]
+        tcp: Option<TcpForm>,
         cols: u32,
         rows: u32,
     },
@@ -211,6 +216,14 @@ struct SerialForm {
     device: String,
     #[serde(flatten)]
     settings: SerialSettings,
+}
+
+#[derive(Deserialize)]
+struct TcpForm {
+    protocol: Protocol,
+    host: String,
+    #[serde(default)]
+    port: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -373,17 +386,22 @@ async fn run(app: Arc<App>, socket: WebSocket) {
                 identity,
                 profile,
                 serial,
+                tcp,
                 cols,
                 rows,
             } => {
                 let (Some(input), Some(term)) = (input_rx.take(), term_tx.take()) else {
                     continue; // already connecting
                 };
-                let args = match serial {
-                    Some(form) => {
-                        Request::Serial(Target::serial(form.device.trim(), form.settings))
+                let args = match (serial, tcp) {
+                    (Some(form), _) => {
+                        Request::Direct(Target::serial(form.device.trim(), form.settings))
                     }
-                    None => Request::Args(TargetArgs {
+                    (None, Some(form)) => {
+                        let port = form.port.or(form.protocol.default_port()).unwrap_or(0);
+                        Request::Direct(Target::tcp(form.protocol, form.host.trim(), port))
+                    }
+                    (None, None) => Request::Args(TargetArgs {
                         target: target.filter(|t| !t.trim().is_empty()),
                         port,
                         identity: identity.filter(|i| !i.trim().is_empty()).map(Into::into),
@@ -543,8 +561,8 @@ struct Tab {
 enum Request {
     /// A host or profile, resolved like the CLI does.
     Args(TargetArgs),
-    /// A serial port given in the dialog.
-    Serial(Target),
+    /// A serial port or Telnet/raw host given in the dialog.
+    Direct(Target),
 }
 
 /// Connects, runs the shell until it exits or the tab closes, then cleans up.
@@ -565,7 +583,7 @@ async fn run_session(
     let closed = |reason: String| send(&out, json!({ "type": "closed", "reason": reason }));
 
     let target = match request {
-        Request::Serial(target) => target,
+        Request::Direct(target) => target,
         Request::Args(args) => {
             match tokio::task::spawn_blocking(move || args.resolve_any()).await {
                 Ok(Ok(target)) => target,
@@ -574,9 +592,13 @@ async fn run_session(
             }
         }
     };
-    if target.protocol == Protocol::Serial {
-        let reason = run_serial(&target, &out, term, input, cancel).await;
-        return closed(reason);
+    match target.protocol {
+        Protocol::Ssh => {}
+        Protocol::Serial => return closed(run_serial(&target, &out, term, input, cancel).await),
+        Protocol::Telnet | Protocol::Raw => {
+            let size = (clamp_u16(cols), clamp_u16(rows));
+            return closed(run_tcp(&target, size, &out, term, input, cancel).await);
+        }
     }
     for warning in &target.warnings {
         send(&out, json!({ "type": "warning", "message": warning }));
@@ -653,7 +675,7 @@ async fn run_session(
                 Input::Resize { cols, rows } => {
                     let _ = writer.window_change(cols, rows, 0, 0).await;
                 }
-                Input::Break(id) => reply(&out, id, Err("breaks are for serial ports".into())),
+                Input::Break(id) => reply(&out, id, Err("SSH has no break signal here".into())),
             }
         }
         true // the tab closed
@@ -785,5 +807,102 @@ async fn run_serial(
         }
     };
     typing.abort();
+    reason
+}
+
+fn clamp_u16(v: u32) -> u16 {
+    v.min(u16::MAX as u32) as u16
+}
+
+/// Runs a Telnet or raw TCP connection until the tab closes or the server
+/// hangs up; returns why it ended.
+async fn run_tcp(
+    target: &Target,
+    size: (u16, u16),
+    out: &OutTx,
+    term: TermTx,
+    mut input: mpsc::UnboundedReceiver<Input>,
+    cancel: CancellationToken,
+) -> String {
+    let protocol = target.protocol;
+    let connecting = TcpLine::connect(protocol, &target.host, target.port, "xterm-256color", size);
+    let line = tokio::select! {
+        r = connecting => match r {
+            Ok(line) => line,
+            Err(e) => return e.to_string(),
+        },
+        _ = cancel.cancelled() => return "closed".to_string(),
+    };
+    let TcpLine {
+        mut reader,
+        mut writer,
+        mut filter,
+    } = line;
+    send(
+        out,
+        json!({ "type": "ready", "conn": null, "protocol": protocol.name(),
+                "label": target.label(), "forwards": [] }),
+    );
+
+    // The server may be slow to read; writes queue here instead of
+    // stopping output. Typing and Telnet replies are small.
+    let (wire, mut wire_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let mut writing = tokio::spawn(async move {
+        while let Some(bytes) = wire_rx.recv().await {
+            writer.write_all(&bytes).await?;
+        }
+        std::io::Result::Ok(())
+    });
+
+    let mut buf = vec![0u8; 16 * 1024];
+    let reason = loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break "closed".to_string(),
+            done = &mut writing => break match done {
+                Ok(Err(e)) => format!("Sending to the server failed: {e}"),
+                _ => "closed".to_string(),
+            },
+            cmd = input.recv() => {
+                let Some(cmd) = cmd else { break "closed".to_string() };
+                let bytes = match cmd {
+                    Input::Data(bytes) => Some(filter.encode(&bytes)),
+                    Input::Resize { cols, rows } => filter.resize(clamp_u16(cols), clamp_u16(rows)),
+                    Input::Break(id) => {
+                        let brk = filter.brk();
+                        let result = match brk {
+                            Some(_) => Ok(Value::Null),
+                            None => Err("raw connections have no break signal".to_string()),
+                        };
+                        reply(out, id, result);
+                        brk
+                    }
+                };
+                if let Some(bytes) = bytes {
+                    let _ = wire.send(bytes);
+                }
+            }
+            // Only read more output while the browser keeps up.
+            r = reader.read(&mut buf), if term.capacity() > 0 => match r {
+                Ok(0) => break "The server closed the connection.".to_string(),
+                Ok(n) => {
+                    let (mut data, mut answer) = (Vec::with_capacity(n), Vec::new());
+                    filter.receive(&buf[..n], &mut data, &mut answer);
+                    if !answer.is_empty() {
+                        let _ = wire.send(answer);
+                    }
+                    if !data.is_empty() && term.try_send(data).is_err() {
+                        break "closed".to_string();
+                    }
+                }
+                Err(e) => break format!("Reading from the server failed: {e}"),
+            },
+            space = term.reserve(), if term.capacity() == 0 => {
+                if space.is_err() {
+                    break "closed".to_string();
+                }
+            }
+        }
+    };
+    writing.abort();
     reason
 }

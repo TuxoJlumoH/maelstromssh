@@ -41,12 +41,29 @@ impl Target {
         }
     }
 
-    /// `user@host:port` (or `/dev/ttyUSB0 9600 8N1`), for prompts and
-    /// status bars.
+    /// A Telnet or raw TCP connection.
+    pub fn tcp(protocol: Protocol, host: impl Into<String>, port: u16) -> Self {
+        Target {
+            protocol,
+            host: host.into(),
+            port,
+            user: String::new(),
+            auth: AuthMethod::default(),
+            forwards: Vec::new(),
+            serial: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// `user@host:port`, `/dev/ttyUSB0 9600 8N1`, `telnet host:23` or
+    /// `raw host:port`, for prompts and status bars.
     pub fn label(&self) -> String {
         match self.protocol {
             Protocol::Ssh => format!("{}@{}:{}", self.user, self.host, self.port),
             Protocol::Serial => format!("{} {}", self.host, self.serial.unwrap_or_default()),
+            Protocol::Telnet | Protocol::Raw => {
+                format!("{} {}:{}", self.protocol.name(), self.host, self.port)
+            }
         }
     }
 }
@@ -158,8 +175,14 @@ impl TargetArgs {
     pub fn resolve_any_with(self, store: &ProfileStore, ssh_config: &SshConfig) -> Result<Target> {
         if let Some(name) = self.profile {
             let p = store.load(&name)?;
-            if p.protocol == Protocol::Serial {
-                return Ok(Target::serial(p.host, p.serial.unwrap_or_default()));
+            match p.protocol {
+                Protocol::Ssh => {}
+                Protocol::Serial => {
+                    return Ok(Target::serial(p.host, p.serial.unwrap_or_default()))
+                }
+                Protocol::Telnet | Protocol::Raw => {
+                    return Ok(Target::tcp(p.protocol, p.host, self.port.unwrap_or(p.port)))
+                }
             }
             let auth = match self.auth {
                 Some(choice) => choice.into_method(self.identity)?,
@@ -367,6 +390,28 @@ mod tests {
             .unwrap();
         assert_eq!(t.protocol, Protocol::Serial);
         assert_eq!(t.label(), "/dev/ttyUSB0 115200 8N1");
+
+        store
+            .save(&Profile {
+                protocol: Protocol::Telnet,
+                host: "switch".into(),
+                port: 2323,
+                ..Profile::new("sw")
+            })
+            .unwrap();
+        let args = TargetArgs {
+            profile: Some("sw".into()),
+            ..Default::default()
+        };
+        let e = args
+            .clone()
+            .resolve_with(&store, &SshConfig::default())
+            .unwrap_err();
+        assert!(e.to_string().contains("telnet profile"), "{e}");
+        let t = args
+            .resolve_any_with(&store, &SshConfig::default())
+            .unwrap();
+        assert_eq!(t.label(), "telnet switch:2323");
         std::fs::remove_dir_all(&dir).ok();
     }
 

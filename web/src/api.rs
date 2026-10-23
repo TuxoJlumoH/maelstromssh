@@ -94,6 +94,11 @@ fn profile_json(p: &Profile) -> Value {
             "serial": settings, "line": settings.to_string(),
         });
     }
+    if p.protocol.is_tcp() {
+        return json!({
+            "name": p.name, "protocol": p.protocol.name(), "host": p.host, "port": p.port,
+        });
+    }
     let identity = match &p.auth {
         AuthMethod::Auto { identities } => identities.first().cloned(),
         AuthMethod::PublicKey { key_path } => Some(key_path.clone()),
@@ -122,7 +127,10 @@ pub struct ProfileForm {
     name: String,
     /// `user@host` or `host`; the device for serial.
     target: String,
-    /// Set for a serial profile.
+    /// "ssh" (the default), "serial", "telnet" or "raw".
+    #[serde(default)]
+    protocol: Protocol,
+    /// Line settings for a serial profile.
     #[serde(default)]
     serial: Option<SerialSettings>,
     #[serde(default)]
@@ -147,8 +155,8 @@ pub async fn save_profile(Json(form): Json<ProfileForm>) -> ApiResult<Json<Value
     blocking(move || {
         let name = form.name.trim().to_string();
         check_profile_name(&name).map_err(bad_request)?;
-        if let Some(settings) = form.serial {
-            return save_serial_profile(name, form.target.trim(), settings, form.original);
+        if form.protocol != Protocol::Ssh || form.serial.is_some() {
+            return save_other_profile(name, form);
         }
         let (user, host) = split_target(form.target.trim());
         if host.is_empty() {
@@ -203,30 +211,44 @@ pub async fn save_profile(Json(form): Json<ProfileForm>) -> ApiResult<Json<Value
     .await
 }
 
-fn save_serial_profile(
-    name: String,
-    device: &str,
-    settings: SerialSettings,
-    original: Option<String>,
-) -> ApiResult<Json<Value>> {
-    if device.is_empty() {
-        return Err(bad_request("enter a serial device, e.g. /dev/ttyUSB0"));
+/// Saves a serial, Telnet or raw profile.
+fn save_other_profile(name: String, form: ProfileForm) -> ApiResult<Json<Value>> {
+    let target = form.target.trim();
+    let mut profile = Profile::new(name.clone());
+    if form.serial.is_some() || form.protocol == Protocol::Serial {
+        if target.is_empty() {
+            return Err(bad_request("enter a serial device, e.g. /dev/ttyUSB0"));
+        }
+        let settings = form.serial.unwrap_or_default();
+        settings.check().map_err(bad_request)?;
+        profile.protocol = Protocol::Serial;
+        profile.serial = Some(settings);
+    } else {
+        if target.is_empty() || target.contains('@') || target.contains(char::is_whitespace) {
+            return Err(bad_request("enter a host name or address"));
+        }
+        let port = form
+            .port
+            .or(form.protocol.default_port())
+            .filter(|&p| p > 0);
+        let Some(port) = port else {
+            return Err(bad_request("enter a port"));
+        };
+        profile.protocol = form.protocol;
+        profile.port = port;
     }
-    settings.check().map_err(bad_request)?;
+    profile.host = target.to_string();
+
     let store = store()?;
+    let original = form.original;
     if original.as_deref() != Some(name.as_str()) && store.load(&name).is_ok() {
         return Err(bad_request(format!(
             "a profile named '{name}' already exists"
         )));
     }
-    let existing = store.load(original.as_deref().unwrap_or(&name)).ok();
-    let profile = Profile {
-        protocol: Protocol::Serial,
-        host: device.to_string(),
-        serial: Some(settings),
-        terminal: existing.map(|p| p.terminal).unwrap_or_default(),
-        ..Profile::new(name.clone())
-    };
+    if let Ok(existing) = store.load(original.as_deref().unwrap_or(&name)) {
+        profile.terminal = existing.terminal;
+    }
     store.save(&profile).map_err(server_error)?;
     if let Some(original) = original.filter(|o| *o != name) {
         let _ = store.delete(&original);

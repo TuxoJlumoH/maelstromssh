@@ -5,12 +5,15 @@
 pub mod config;
 pub mod error;
 pub mod keys;
+pub mod net;
 pub mod paths;
 pub mod prompt;
 pub mod serial;
 pub mod sftp;
 pub mod ssh;
 pub mod target;
+pub mod tcp;
+pub mod telnet;
 pub mod term;
 pub mod tunnel;
 

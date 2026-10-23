@@ -140,8 +140,9 @@ vortexssh connect -D 1080 user@example.com                     # SOCKS5 proxy
 vortexssh connect -L 127.0.0.1:8080:localhost:80 user@host     # bind a specific local addr
 ```
 
-With a serial profile, `connect --profile NAME` opens its serial port
-instead (see `serial` below); port forwards are refused there.
+With a serial, Telnet or raw profile, `connect --profile NAME` opens that
+instead (see `serial`, `telnet` and `raw` below); port forwards are refused
+there.
 
 ### `serial` — open a serial (COM) port
 
@@ -179,6 +180,33 @@ and back in. To try it without hardware, make a virtual cable with
 `/dev/pts/N` devices it prints, e.g. with `vortexssh serial`, and the
 other one with a second program.
 
+### `telnet` and `raw` — Telnet and raw TCP connections
+
+```
+vortexssh telnet <HOST> [PORT]     # PORT defaults to 23
+vortexssh raw <HOST> <PORT>
+```
+
+`telnet` speaks the Telnet protocol: it asks the server to echo and to work
+a character at a time, sends the window size (and updates it when the
+terminal is resized) and the terminal type (`$TERM`), and escapes the
+bytes it sends. `raw` passes bytes both ways unchanged, e.g. for
+serial-over-IP adapters or testing a service.
+
+The keys are the same as for `serial`: **Ctrl-] q** quits, **Ctrl-] b**
+sends a break (Telnet `IAC BREAK`; raw has none), **Ctrl-] Ctrl-]** sends
+Ctrl-].
+
+Telnet is **not encrypted**: anyone on the network path can read the
+session, passwords included. Use it only for equipment that has nothing
+else, on a network you trust.
+
+```bash
+vortexssh telnet 192.168.1.1
+vortexssh telnet switch.lan 2323
+vortexssh raw 192.168.1.50 4001
+```
+
 ### `profile` — manage saved profiles
 
 ```
@@ -192,10 +220,14 @@ vortexssh profile rm <NAME>
 `-i, --identity <PATH>`, `-L`/`-R`/`-D` (forward specs, repeatable).
 With `--serial`, `TARGET` is a device and the line is set with the
 `serial` flags (`-b`, `--data-bits`, `--parity`, `--stop-bits`, `--flow`).
+With `--telnet` (port 23 unless `-p` is given) or `--raw` (`-p` required),
+`TARGET` is a host name or address.
 
 ```bash
 vortexssh profile add mybox user@10.0.0.5 -p 2222 -i ~/.ssh/id_ed25519
 vortexssh profile add switch /dev/ttyUSB0 --serial -b 9600
+vortexssh profile add oldrouter 192.168.1.1 --telnet
+vortexssh profile add ser2net 192.168.1.50 --raw -p 4001
 vortexssh profile list
 vortexssh profile show mybox
 vortexssh profile rm mybox
@@ -342,6 +374,9 @@ server makes old links invalid, and the page then asks for the new one.
   The device field suggests the ports found on this machine; set speed,
   data bits, parity, stop bits and flow control. Serial tabs have a
   *Send break* button instead of Files and Port forwards.
+- **Telnet and raw TCP**: choose *Telnet* or *Raw* and enter the host and
+  port (Telnet defaults to 23). Telnet tabs have *Send break*; neither has
+  Files or Port forwards.
 - **Terminal**: `xterm.js`, resized with the window. Closed connections show a
   *Reconnect* button.
 - **Files**: browse, upload (button or drag and drop), download, rename,
@@ -400,6 +435,16 @@ serial = { baud = 9600, data_bits = 8, parity = "none", stop_bits = 1, flow_cont
 no flow control); `parity` is `none`, `odd` or `even`, `flow_control` is
 `none`, `software` (XON/XOFF) or `hardware` (RTS/CTS).
 
+Telnet and raw profiles have `protocol = "telnet"` or `"raw"`, a `host` and a
+`port`:
+
+```toml
+name = "oldrouter"
+protocol = "telnet"
+host = "192.168.1.1"
+port = 23
+```
+
 ---
 
 ## 8. Core library (`vortexssh-core`) — functions
@@ -409,7 +454,7 @@ The engine every front-end uses. No UI/rendering code lives here.
 ### `config` — persisted profiles
 
 - `Profile { name, protocol, host, port, user, auth, forwards, serial, terminal }`; `Profile::new(name)` for defaults
-- `Protocol::{ Ssh, Serial }`; `SerialSettings { baud, data_bits, parity, stop_bits, flow_control }` (`check()`, displays as `9600 8N1`), `Parity`, `FlowControl`
+- `Protocol::{ Ssh, Serial, Telnet, Raw }` (`name()`, `is_tcp()`, `default_port()`); `SerialSettings { baud, data_bits, parity, stop_bits, flow_control }` (`check()`, displays as `9600 8N1`), `Parity`, `FlowControl`
 - `AuthMethod::{ Auto{identities}, Password, PublicKey{key_path}, Agent, KeyboardInteractive }` (default `Auto` with no identities)
 - `ForwardRule { kind, bind_host, bind_port, dest_host, dest_port }` / `ForwardKind::{ Local, Remote, Dynamic }`
 - `TerminalSettings { term_type, scrollback_lines, color_scheme }`
@@ -431,8 +476,9 @@ The engine every front-end uses. No UI/rendering code lives here.
 - `TargetArgs { target, port, identity, profile, auth }` (`clap::Args` with the
   `clap` feature) → `resolve() -> Target { protocol, host, port, user, auth, forwards, serial, warnings }`
   (`resolve_with(&ProfileStore, &SshConfig)` for explicit sources). These
-  refuse serial profiles; `resolve_any()` / `resolve_any_with()` accept them.
-  `Target::serial(device, settings)` builds a serial target.
+  refuse non-SSH profiles; `resolve_any()` / `resolve_any_with()` accept them.
+  `Target::serial(device, settings)` and `Target::tcp(protocol, host, port)`
+  build the other kinds.
 - `SshConfig` — `load_default()`, `from_file(path, base)`, `parse(text, base)`,
   `lookup(host, user) -> HostConfig { hostname, user, port, identity_files, unsupported }`,
   `host_aliases()`
@@ -444,6 +490,13 @@ The engine every front-end uses. No UI/rendering code lives here.
 - `list_ports() -> Vec<PortInfo { path, description }>` (empty built-in `ttyS*` slots are skipped)
 - `open(path, &SerialSettings) -> SerialStream` (tokio `AsyncRead + AsyncWrite`, exclusive)
 - `Line::open(path, &settings) -> Line { reader, writer, breaker }`; `Breaker::send()` sends a break (blocks ~0.25 s)
+
+### `tcp` / `telnet` / `net` — Telnet and raw TCP
+
+- `TcpLine::connect(protocol, host, port, term_type, (cols, rows)) -> TcpLine { reader, writer, filter }`
+- `Filter::{ Raw, Telnet }` — `receive(input, &mut data, &mut reply)`, `encode(typed)`, `resize(cols, rows)`, `brk()`
+- `telnet::Telnet` — the RFC 854 state machine (ECHO, SGA, BINARY, NAWS, TERMINAL-TYPE; everything else refused)
+- `net::connect(host, port, service) -> TcpStream` — with readable errors (shared with SSH)
 
 ### `ssh` — transport & sessions
 

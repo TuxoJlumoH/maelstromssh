@@ -53,6 +53,10 @@ pub enum Protocol {
     Ssh,
     /// A local serial port (COM port), e.g. `/dev/ttyUSB0`.
     Serial,
+    /// Telnet (unencrypted), e.g. to old switches and routers.
+    Telnet,
+    /// A plain TCP connection: bytes go both ways unchanged.
+    Raw,
 }
 
 impl Protocol {
@@ -60,6 +64,22 @@ impl Protocol {
         match self {
             Protocol::Ssh => "ssh",
             Protocol::Serial => "serial",
+            Protocol::Telnet => "telnet",
+            Protocol::Raw => "raw",
+        }
+    }
+
+    /// Telnet and raw: a terminal over a plain TCP connection.
+    pub fn is_tcp(self) -> bool {
+        matches!(self, Protocol::Telnet | Protocol::Raw)
+    }
+
+    /// The usual port, if the protocol has one.
+    pub fn default_port(self) -> Option<u16> {
+        match self {
+            Protocol::Ssh => Some(22),
+            Protocol::Telnet => Some(23),
+            Protocol::Serial | Protocol::Raw => None,
         }
     }
 }

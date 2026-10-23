@@ -1,7 +1,7 @@
 // VortexSSH web UI. Plain browser JavaScript, no build step.
 //
 // Each tab opens one WebSocket to the server, which holds one SSH
-// connection or serial port: terminal bytes travel as binary frames, everything else as
+// connection, serial port or Telnet/raw TCP connection: terminal bytes travel as binary frames, everything else as
 // JSON (see web/src/conn.rs). Text from the server or remote machines is
 // only ever inserted with textContent, never as HTML.
 "use strict";
@@ -203,12 +203,13 @@ const FORWARD_HELP = {
 
 class Tab {
   /// `target`: what to send in `connect` ({target, port, identity},
-  /// {serial: {device, baud, ...}} or {profile}).
+  /// {serial: {device, baud, ...}}, {tcp: {protocol, host, port}} or
+  /// {profile}).
   constructor(title, target) {
     this.title = title;
     this.target = target;
     /// The server's id for the SSH connection (files, forwards); null for
-    /// serial ports and while not connected.
+    /// other protocols and while not connected.
     this.conn = null;
     this.live = false;
     this.ws = null;
@@ -233,7 +234,7 @@ class Tab {
     this.forwardsButton = $(".toggle-forwards", this.view);
     this.breakButton = $(".send-break", this.view);
     this.breakButton.addEventListener("click", () => this.sendBreak());
-    if (target.serial) {
+    if (target.serial || target.tcp) {
       this.filesButton.hidden = true;
       this.forwardsButton.hidden = true;
     }
@@ -375,10 +376,11 @@ class Tab {
         break;
       case "ready": {
         this.conn = msg.conn ?? null;
-        const serial = msg.protocol === "serial";
-        this.filesButton.hidden = serial;
-        this.forwardsButton.hidden = serial;
-        this.breakButton.hidden = !serial;
+        const ssh = msg.conn != null;
+        this.filesButton.hidden = !ssh;
+        this.forwardsButton.hidden = !ssh;
+        // Serial lines and Telnet have a break signal; raw TCP has none.
+        this.breakButton.hidden = !(msg.protocol === "serial" || msg.protocol === "telnet");
         this.setState("connected", msg.label);
         this.renderForwards(msg.forwards);
         this.term.focus();
@@ -430,7 +432,8 @@ class Tab {
     return null;
   }
 
-  /// A serial break, e.g. to stop a router's boot and enter ROM monitor.
+  /// A serial or Telnet break, e.g. to stop a router's boot and enter
+  /// ROM monitor.
   async sendBreak() {
     this.breakButton.disabled = true;
     try {
@@ -788,8 +791,7 @@ async function loadHosts() {
     el("button", { class: "host", title: `Connect to ${p.name}`,
       onclick: () => new Tab(p.name, { profile: p.name }) },
       el("span", { text: p.name }),
-      el("span", { class: "sub", text: p.protocol === "serial" ? `${p.device} ${p.line}`
-        : `${p.user}@${p.host}${p.port !== 22 ? `:${p.port}` : ""}` })),
+      el("span", { class: "sub", text: profileSummary(p) })),
     el("button", { class: "edit icon", title: "Edit", "aria-label": `Edit ${p.name}`,
       onclick: () => editProfile(p) }, "✎"))));
   $("#no-profiles").hidden = profiles.length > 0;
@@ -800,6 +802,12 @@ async function loadHosts() {
   showHostErrors(data.errors);
 }
 
+function profileSummary(p) {
+  if (p.protocol === "serial") return `${p.device} ${p.line}`;
+  if (p.protocol === "telnet" || p.protocol === "raw") return `${p.protocol} ${p.host}:${p.port}`;
+  return `${p.user}@${p.host}${p.port !== 22 ? `:${p.port}` : ""}`;
+}
+
 function showHostErrors(errors) {
   const node = $("#host-errors");
   node.textContent = errors.join("\n");
@@ -808,20 +816,41 @@ function showHostErrors(errors) {
 
 // New connection dialog
 
-// Both dialogs offer SSH or a serial port. The fields of the other type
-// are hidden and not required.
+// Both dialogs offer SSH, a serial port, Telnet or raw TCP. The fields of
+// the other types are hidden and not required.
+
+const TCP_NOTES = {
+  telnet: "Telnet is not encrypted: anyone on the network path can read it, passwords included.",
+  raw: "Bytes go both ways unchanged, e.g. to a serial-over-IP adapter or a test service.",
+};
 
 function protocolOf(form) {
   return form.querySelector("input[name=protocol]:checked").value;
 }
 
 function showProtocol(form) {
-  const serial = protocolOf(form) === "serial";
-  $(".ssh-only", form).hidden = serial;
+  const protocol = protocolOf(form);
+  const serial = protocol === "serial";
+  const tcp = protocol === "telnet" || protocol === "raw";
+  $(".ssh-only", form).hidden = protocol !== "ssh";
   $(".serial-only", form).hidden = !serial;
-  form.target.required = !serial;
+  $(".tcp-only", form).hidden = !tcp;
+  form.target.required = protocol === "ssh";
   form.device.required = serial;
+  form.tcp_host.required = tcp;
+  // Telnet defaults to 23; a raw connection has no usual port.
+  form.tcp_port.required = protocol === "raw";
+  form.tcp_port.placeholder = protocol === "telnet" ? "23" : "";
+  if (tcp) $(".tcp-note", form).textContent = TCP_NOTES[protocol];
   if (serial) loadSerialPorts(form);
+}
+
+function tcpSettings(form) {
+  return {
+    protocol: protocolOf(form),
+    host: form.tcp_host.value.trim(),
+    port: form.tcp_port.value ? Number(form.tcp_port.value) : null,
+  };
 }
 
 for (const form of [$("#connect-dialog form"), $("#profile-dialog form")]) {
@@ -890,6 +919,12 @@ connectDialog.addEventListener("close", () => {
     new Tab(serial.device.replace(/^\/dev\//, ""), { serial });
     return;
   }
+  if (protocolOf(form) !== "ssh") {
+    const tcp = tcpSettings(form);
+    if (!tcp.host) return;
+    new Tab(tcp.port ? `${tcp.host}:${tcp.port}` : tcp.host, { tcp });
+    return;
+  }
   const target = form.target.value.trim();
   if (!target) return;
   const port = form.port.value ? Number(form.port.value) : undefined;
@@ -912,10 +947,14 @@ function editProfile(profile) {
   $(".title", profileDialog).textContent = profile ? `Edit ${profile.name}` : "New profile";
   $(".delete", profileDialog).hidden = !profile;
   $(".error", profileDialog).hidden = true;
-  setProtocol(form, profile?.protocol === "serial" ? "serial" : "ssh");
+  setProtocol(form, profile?.protocol ?? "ssh");
   if (profile?.protocol === "serial") {
     form.name.value = profile.name;
     fillSerial(form, profile.device, profile.serial);
+  } else if (profile?.protocol === "telnet" || profile?.protocol === "raw") {
+    form.name.value = profile.name;
+    form.tcp_host.value = profile.host;
+    form.tcp_port.value = profile.protocol === "telnet" && profile.port === 23 ? "" : profile.port;
   } else if (profile) {
     form.name.value = profile.name;
     form.target.value = `${profile.user}@${profile.host}`;
@@ -957,6 +996,15 @@ $("form", profileDialog).addEventListener("submit", async (e) => {
         name: form.name.value.trim(),
         target: device,
         serial,
+        original: editing ? editing.name : null,
+      });
+    } else if (protocolOf(form) !== "ssh") {
+      const { protocol, host, port } = tcpSettings(form);
+      await api("POST", "/api/profiles", {
+        name: form.name.value.trim(),
+        protocol,
+        target: host,
+        port,
         original: editing ? editing.name : null,
       });
     } else {
