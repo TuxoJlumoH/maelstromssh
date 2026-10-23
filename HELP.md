@@ -1,11 +1,11 @@
 # VortexSSH — Help & Reference
 
-A Rust SSH/SFTP client with three front-ends (`vortexssh` CLI, `vortexssh-tui`
-terminal UI, `vortexssh-gui` graphical UI) all driven by one UI-agnostic engine
-(`vortexssh-core`).
+A Rust SSH/SFTP client with four front-ends (`vortexssh` CLI, `vortexssh-tui`
+terminal UI, `vortexssh-gui` graphical UI, `vortexssh-web` browser UI) all
+driven by one UI-agnostic engine (`vortexssh-core`).
 
 - Workspace: `~/Projects/vortexssh`
-- Crates: `core/` (library), `cli/`, `tui/`, `gui/` (binaries)
+- Crates: `core/` (library), `cli/`, `tui/`, `gui/`, `web/` (binaries)
 - Config dir: `~/.config/vortexssh/profiles/*.toml`
 
 ---
@@ -14,7 +14,7 @@ terminal UI, `vortexssh-gui` graphical UI) all driven by one UI-agnostic engine
 
 ```bash
 cd ~/Projects/vortexssh
-cargo build --release            # builds all three binaries
+cargo build --release            # builds all four binaries
 cargo test --workspace           # run the test suite
 ```
 
@@ -279,7 +279,42 @@ Arrows / Home / End / F-keys / `Alt`+key are forwarded; mouse reporting
 
 ---
 
-## 6. Profiles (file format)
+## 6. Web UI — `vortexssh-web`
+
+A small local web server; the browser is the screen.
+
+```
+vortexssh-web [--port PORT] [--no-browser]
+```
+
+It listens on **127.0.0.1 only** (port 8022, or a free port if that is
+taken), prints a login link with a random token, and opens it in your
+browser. The link sets a cookie for that browser; restarting the server
+makes old links and cookies invalid.
+
+- **Connect**: *New connection* (`user@host` or an ssh_config alias, optional
+  port and key file), a saved profile, or a `~/.ssh/config` alias from the
+  sidebar. Each connection is a tab. Login prompts (passphrase, password,
+  2FA, unknown host key) appear as dialogs.
+- **Terminal**: `xterm.js`, resized with the window. Closed connections show a
+  *Reconnect* button.
+- **Files**: browse, upload (button or drag and drop), download, rename,
+  delete, new folder. Transfers stream over the same SSH connection.
+- **Port forwards**: add `-L`/`-R`/`-D` forwards (same syntax as the CLI) and
+  stop them while connected. A profile's forwards start on connect.
+- **Profiles**: `+` creates one, the ✎ button edits or deletes one. Forwards
+  are entered one per line, e.g. `-L 8080:localhost:80`.
+
+Security: requests must carry the session cookie and name this server in
+`Host` (blocks DNS rebinding); WebSockets and changes must come from the app's
+own page (`Origin` check). The browser is opened through a private (0600)
+redirect file, so the token never appears in a process list. Passwords are
+never stored. Anyone who can run programs as you can still reach your SSH
+keys anyway; the web UI does not change that.
+
+---
+
+## 7. Profiles (file format)
 
 Profiles are TOML files at `~/.config/vortexssh/profiles/<name>.toml`.
 
@@ -303,7 +338,7 @@ terminal = { term_type = "xterm-256color", scrollback_lines = 10000 }
 
 ---
 
-## 7. Core library (`vortexssh-core`) — functions
+## 8. Core library (`vortexssh-core`) — functions
 
 The engine every front-end uses. No UI/rendering code lives here.
 
@@ -314,6 +349,8 @@ The engine every front-end uses. No UI/rendering code lives here.
 - `ForwardRule { kind, bind_host, bind_port, dest_host, dest_port }` / `ForwardKind::{ Local, Remote, Dynamic }`
 - `TerminalSettings { term_type, scrollback_lines, color_scheme }`
 - `ProfileStore` — `new(dir)`, `default_location()`, `list()`, `load(name)`, `save(&profile)`, `delete(name)`
+- `check_profile_name(name)` — names are letters, digits, `.`, `_`, `-` (no leading dot)
+- `parse_forward(spec, kind) -> ForwardRule` / `forward_spec(&rule) -> String` — `-L/-R/-D` spec syntax
 
 ### `keys` — key generation & import/export
 
@@ -341,7 +378,8 @@ The engine every front-end uses. No UI/rendering code lives here.
 - `Session::open_shell(term_type, cols, rows) -> Channel` (PTY + shell)
 - `Session::open_exec(command) -> Channel` (one-shot, no PTY)
 - `Session::open_subsystem(name) -> Channel` (e.g. `"sftp"`)
-- `Session::disconnect()`
+- `Session::disconnect()`, `Session::is_closed()`
+- Channel methods take `&self`, so one session can serve a shell, SFTP and forwards at once
 - `HostKeyVerifier` trait — `verify(&self, host, port, key) -> Result<bool>`
 - `KnownHosts { prompter }` (TOFU + known_hosts), `AcceptAll` (tests only)
 - `ServerEvent::{ ForwardedTcpIp{..} }`
@@ -349,11 +387,13 @@ The engine every front-end uses. No UI/rendering code lives here.
 
 ### `sftp` — file transfer
 
-- `open(&mut Session) -> SftpSession` — opens the subsystem channel.
+- `open(&Session) -> SftpSession` — opens the subsystem channel.
 - `get(sftp, remote, local) -> Result<u64>` — streaming download (64 KiB chunks).
 - `put(sftp, local, remote) -> Result<u64>` — streaming upload.
 - `list(sftp, path) -> Result<Vec<DirEntry>>` — sorted directory listing
-  (`DirEntry { name, is_dir, size }`).
+  (`DirEntry { name, is_dir, is_symlink, size, modified, permissions }`;
+  symlinks to directories count as directories).
+- `open_read`, `open_write` -> `File` (async read/write, for streaming), `file_size`
 - `canonicalize`, `remove_file`, `remove_dir`, `create_dir`, `rename`
 - Re-exports `SftpSession` so front-ends can name the type.
 
@@ -387,6 +427,9 @@ alternate screen (`?1049`), RIS, DECSTR, REP, DECCKM/DECPAM, mouse modes
 - `forward_local(handle, bind_host, bind_port, dest_host, dest_port)` — bind a
   local listener, relay each connection over `direct-tcpip`.
 - `forward_dynamic(handle, bind_host, bind_port)` — local SOCKS5 proxy.
+- `Forwarder::new(&mut Session)` → `start(&rule) -> ActiveForward { info, .. }`;
+  `ActiveForward::stop()` ends one forward (remote forwards are cancelled on
+  the server). An empty bind address means 127.0.0.1.
 - `ForwardInfo::{ Local, Remote, Dynamic }` (implements `Display`).
 - `parse_socks_addr(&[u8])` — pure SOCKS5 address parser (unit-tested).
 
@@ -401,7 +444,7 @@ forwarding tasks.
 
 ---
 
-## 8. Data flow (how the front-ends use the core)
+## 9. Data flow (how the front-ends use the core)
 
 1. Resolve connection settings (CLI args or a `Profile`).
 2. `Session::connect(...)`, which asks the front-end's `Prompter` for secrets,

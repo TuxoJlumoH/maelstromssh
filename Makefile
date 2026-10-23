@@ -13,7 +13,7 @@ PREFIX  ?= /usr/local
 DESTDIR ?=
 CARGO   ?= cargo
 
-BINS    := vortexssh vortexssh-tui vortexssh-gui
+BINS    := vortexssh vortexssh-tui vortexssh-gui vortexssh-web
 SIZES   := 16 24 32 48 64 128 256 512
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
 ARCH    := $(shell uname -m)
@@ -42,7 +42,8 @@ install:
 	done
 	install -Dm644 assets/icon.svg $(SHARE)/icons/hicolor/scalable/apps/vortexssh.svg
 	install -Dm644 -t $(SHARE)/doc/vortexssh README.md HELP.md
-	install -Dm644 -t $(SHARE)/licenses/vortexssh LICENSE-MIT LICENSE-APACHE
+	install -Dm644 -t $(SHARE)/licenses/vortexssh LICENSE-MIT LICENSE-APACHE \
+		web/assets/vendor/LICENSE-xterm web/assets/vendor/LICENSE-xterm-addon-fit
 
 uninstall:
 	rm -f $(addprefix $(BINDIR)/,$(BINS))

@@ -1,5 +1,5 @@
 pkgbase = vortexssh
-	pkgdesc = SSH/SFTP client with CLI, terminal UI and graphical front-ends
+	pkgdesc = SSH/SFTP client with CLI, terminal UI, graphical and browser front-ends
 	pkgver = 0.2.0
 	pkgrel = 1
 	url = https://github.com/TuxoJlumoH/vortexssh

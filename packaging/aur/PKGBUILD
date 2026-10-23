@@ -3,7 +3,7 @@
 pkgname=vortexssh
 pkgver=0.2.0
 pkgrel=1
-pkgdesc='SSH/SFTP client with CLI, terminal UI and graphical front-ends'
+pkgdesc='SSH/SFTP client with CLI, terminal UI, graphical and browser front-ends'
 arch=('x86_64' 'aarch64')
 url='https://github.com/TuxoJlumoH/vortexssh'
 license=('MIT OR Apache-2.0')

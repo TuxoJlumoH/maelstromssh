@@ -5,8 +5,8 @@
 <h1 align="center">VortexSSH</h1>
 
 <p align="center">
-  An SSH/SFTP client for Linux, written in Rust — with a CLI, a terminal TUI, and a graphical
-  GUI, all driven by one UI-agnostic engine.
+  An SSH/SFTP client for Linux, written in Rust — with a CLI, a terminal TUI, a graphical
+  GUI and a browser UI, all driven by one UI-agnostic engine.
 </p>
 
 ## Features
@@ -17,6 +17,7 @@
 - **Key generation** — Ed25519 and RSA (configurable size).
 - **Full terminal emulator** — 256-color + truecolor, scrollback, reflow-on-resize, scroll regions, alternate screen, mouse reporting, bracketed paste.
 - **Profiles** — persisted connection settings (with per-profile port forwards).
+- **Web UI** — terminal tabs, a drag-and-drop file browser and live port-forward management in your browser, served only to this machine.
 
 ## Install
 
@@ -36,13 +37,14 @@
   # or: make install PREFIX=~/.local
   ```
 
-Three binaries are produced:
+Four binaries are produced:
 
 | Binary | Description |
 |---|---|
 | `vortexssh` | CLI — connect, `sftp`, `profile`, `keygen` |
 | `vortexssh-tui` | Full-screen terminal UI (`ratatui`) |
 | `vortexssh-gui` | Graphical window (`egui`/`eframe`) |
+| `vortexssh-web` | Browser UI on 127.0.0.1 (`axum` + `xterm.js`) |
 
 ### CLI
 
@@ -68,6 +70,18 @@ vortexssh-gui user@host
 The GUI performs authentication (password/passphrase prompts and host-key
 confirmation) inside the window.
 
+### Web UI
+
+```bash
+vortexssh-web                     # opens your browser on http://127.0.0.1:8022
+vortexssh-web --no-browser        # only print the login link
+```
+
+Each tab is one SSH connection with a terminal, an SFTP file browser
+(upload by drag and drop, download, rename, delete) and port forwards you can
+add and stop while connected. It listens on 127.0.0.1 only and needs the
+random login link it prints at startup.
+
 ## Project layout
 
 ```
@@ -75,6 +89,7 @@ core/    vortexssh-core — protocol engine (SSH, SFTP, tunnel, keys, terminal)
 cli/     vortexssh      — command-line front-end
 tui/     vortexssh-tui  — ratatui terminal UI
 gui/     vortexssh-gui  — egui/eframe graphical UI
+web/     vortexssh-web  — browser UI (axum server + plain JS, xterm.js vendored)
 assets/                 — app icon (SVG/PNG)
 ```
 
@@ -86,3 +101,6 @@ Full usage and API reference: [`HELP.md`](HELP.md).
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
 [MIT license](LICENSE-MIT), at your option.
+
+The web UI bundles [xterm.js](https://xtermjs.org) and its fit addon (MIT);
+see `web/assets/vendor/`.

@@ -24,9 +24,10 @@ maintainer = "TuxoJlumoH <smokie.bg@gmail.com>"
 copyright = "2026, TuxoJlumoH"
 license-file = ["../LICENSE-MIT", "0"]
 extended-description = """\
-An SSH and SFTP client with three front-ends: a command-line client \
-(vortexssh), a full-screen terminal UI (vortexssh-tui) and a graphical \
-terminal (vortexssh-gui). Supports ssh-agent, key files, keyboard-interactive \
+An SSH and SFTP client with four front-ends: a command-line client \
+(vortexssh), a full-screen terminal UI (vortexssh-tui), a graphical \
+terminal (vortexssh-gui) and a browser UI served on 127.0.0.1 \
+(vortexssh-web). Supports ssh-agent, key files, keyboard-interactive \
 2FA, ~/.ssh/config host aliases, and local/remote/SOCKS port forwarding."""
 section = "net"
 priority = "optional"
@@ -37,6 +38,7 @@ assets = [
     ["target/release/vortexssh", "usr/bin/", "755"],
     ["target/release/vortexssh-tui", "usr/bin/", "755"],
     ["target/release/vortexssh-gui", "usr/bin/", "755"],
+    ["target/release/vortexssh-web", "usr/bin/", "755"],
     ["../packaging/vortexssh.desktop", "usr/share/applications/", "644"],
     ["../assets/icon-16.png", "usr/share/icons/hicolor/16x16/apps/vortexssh.png", "644"],
     ["../assets/icon-24.png", "usr/share/icons/hicolor/24x24/apps/vortexssh.png", "644"],
@@ -49,4 +51,6 @@ assets = [
     ["../assets/icon.svg", "usr/share/icons/hicolor/scalable/apps/vortexssh.svg", "644"],
     ["../README.md", "usr/share/doc/vortexssh/", "644"],
     ["../HELP.md", "usr/share/doc/vortexssh/", "644"],
+    ["../web/assets/vendor/LICENSE-xterm", "usr/share/licenses/vortexssh/", "644"],
+    ["../web/assets/vendor/LICENSE-xterm-addon-fit", "usr/share/licenses/vortexssh/", "644"],
 ]
