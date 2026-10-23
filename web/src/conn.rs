@@ -318,6 +318,16 @@ async fn run(app: Arc<App>, socket: WebSocket) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("bad message from the browser: {e}");
+                // Answer it, so the page does not wait forever.
+                let message: Value = serde_json::from_str(&text).unwrap_or_default();
+                if let Some(id) = message.get("id").and_then(Value::as_u64) {
+                    reply(&out, id, Err(format!("bad request: {e}")));
+                } else if message.get("type").and_then(Value::as_str) == Some("connect") {
+                    send(
+                        &out,
+                        json!({ "type": "closed", "reason": format!("bad request: {e}") }),
+                    );
+                }
                 continue;
             }
         };
