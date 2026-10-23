@@ -22,6 +22,8 @@ mod api;
 mod assets;
 mod auth;
 mod conn;
+#[cfg(test)]
+mod tests;
 
 /// Tried first when `--port` is not given; a free port is used if it is taken.
 const DEFAULT_PORT: u16 = 8022;
