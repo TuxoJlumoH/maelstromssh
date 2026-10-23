@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VortexSSH</title>
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/xterm.css">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <aside id="sidebar">
+    <header class="brand">
+      <img src="/assets/icon.svg" alt="" width="28" height="28">
+      <span>VortexSSH</span>
+    </header>
+    <button id="new-connection" class="primary wide">New connection</button>
+
+    <section>
+      <div class="section-head">
+        <h2>Profiles</h2>
+        <button id="new-profile" class="icon" title="New profile" aria-label="New profile">+</button>
+      </div>
+      <ul id="profiles" class="host-list"></ul>
+      <p id="no-profiles" class="muted small" hidden>No saved profiles yet.</p>
+    </section>
+
+    <section>
+      <h2>~/.ssh/config</h2>
+      <ul id="aliases" class="host-list"></ul>
+      <p id="no-aliases" class="muted small" hidden>No host aliases.</p>
+    </section>
+
+    <p id="host-errors" class="error small" hidden></p>
+  </aside>
+
+  <main id="main">
+    <nav id="tabs" role="tablist"></nav>
+    <div id="views">
+      <div id="welcome" class="welcome">
+        <img src="/assets/icon.svg" alt="" width="72" height="72">
+        <h1>VortexSSH</h1>
+        <p class="muted">Pick a profile or a host on the left, or start a new connection.</p>
+        <button id="welcome-connect" class="primary">New connection</button>
+      </div>
+    </div>
+  </main>
+
+  <template id="tab-view">
+    <section class="view" role="tabpanel">
+      <div class="toolbar">
+        <span class="status"><span class="dot"></span><span class="status-text"></span></span>
+        <div class="toolbar-buttons">
+          <button class="toggle-files" disabled>Files</button>
+          <button class="toggle-forwards" disabled>Port forwards</button>
+        </div>
+      </div>
+      <div class="warnings" hidden></div>
+      <div class="split">
+        <div class="terminal-wrap"><div class="terminal"></div></div>
+        <aside class="panel files-panel" hidden>
+          <div class="panel-head">
+            <h3>Files</h3>
+            <button class="icon close-panel" aria-label="Close">×</button>
+          </div>
+          <form class="path-bar">
+            <button type="button" class="icon up" title="Parent folder" aria-label="Parent folder">↑</button>
+            <input class="path" spellcheck="false" aria-label="Remote path">
+            <button type="submit" class="icon" title="Go" aria-label="Go">→</button>
+          </form>
+          <div class="file-actions">
+            <button class="upload">Upload…</button>
+            <button class="mkdir">New folder</button>
+            <button class="refresh">Refresh</button>
+            <input type="file" class="file-input" multiple hidden>
+          </div>
+          <div class="transfers"></div>
+          <div class="drop-zone">
+            <table class="files">
+              <thead><tr><th>Name</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+            <p class="files-message muted"></p>
+          </div>
+          <p class="muted small">Drop files here to upload them to this folder.</p>
+        </aside>
+        <aside class="panel forwards-panel" hidden>
+          <div class="panel-head">
+            <h3>Port forwards</h3>
+            <button class="icon close-panel" aria-label="Close">×</button>
+          </div>
+          <form class="forward-form">
+            <select class="forward-kind" aria-label="Forward type">
+              <option value="local">Local (-L)</option>
+              <option value="remote">Remote (-R)</option>
+              <option value="dynamic">SOCKS (-D)</option>
+            </select>
+            <input class="forward-spec" placeholder="8080:localhost:80" spellcheck="false" aria-label="Forward">
+            <button type="submit" class="primary">Add</button>
+          </form>
+          <p class="forward-help muted small"></p>
+          <p class="forward-error error small" hidden></p>
+          <ul class="forward-list"></ul>
+          <p class="no-forwards muted small">No forwards running.</p>
+        </aside>
+      </div>
+    </section>
+  </template>
+
+  <dialog id="connect-dialog">
+    <form method="dialog" class="dialog-form">
+      <h2>New connection</h2>
+      <label>Host <input name="target" placeholder="user@host or an ssh_config alias" required spellcheck="false" autocomplete="off"></label>
+      <div class="row">
+        <label>Port <input name="port" type="number" min="1" max="65535" placeholder="22"></label>
+        <label class="grow">Key file <input name="identity" placeholder="optional, e.g. ~/.ssh/id_ed25519" spellcheck="false"></label>
+      </div>
+      <p class="muted small">Logs in like OpenSSH: ssh-agent, your ~/.ssh keys, then password or 2FA.</p>
+      <div class="buttons">
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="primary">Connect</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="profile-dialog">
+    <form method="dialog" class="dialog-form">
+      <h2 class="title">New profile</h2>
+      <label>Name <input name="name" required pattern="[A-Za-z0-9_\-][A-Za-z0-9._\-]*" maxlength="64" title="Letters, digits, '.', '_' and '-'" spellcheck="false"></label>
+      <label>Host <input name="target" placeholder="user@host" required spellcheck="false"></label>
+      <div class="row">
+        <label>Port <input name="port" type="number" min="1" max="65535" placeholder="22"></label>
+        <label class="grow">Key file <input name="identity" placeholder="optional" spellcheck="false"></label>
+      </div>
+      <label>Port forwards, one per line <textarea name="forwards" rows="3" spellcheck="false" placeholder="-L 8080:localhost:80&#10;-D 1080"></textarea></label>
+      <p class="error small" hidden></p>
+      <div class="buttons">
+        <button value="delete" class="danger delete" formnovalidate hidden>Delete</button>
+        <span class="grow"></span>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="ask-dialog">
+    <form method="dialog" class="dialog-form">
+      <h2 class="title"></h2>
+      <p class="message"></p>
+      <div class="fields"></div>
+      <div class="buttons">
+        <button value="cancel" formnovalidate class="cancel">Cancel</button>
+        <button value="ok" class="primary ok">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/assets/xterm.js"></script>
+  <script src="/assets/addon-fit.js"></script>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
