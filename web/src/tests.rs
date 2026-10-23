@@ -61,8 +61,7 @@ async fn login_sets_a_cookie_and_redirects() {
         Body::empty(),
     ))
     .await;
-    assert_eq!(r.status(), StatusCode::SEE_OTHER);
-    assert_eq!(r.headers()[header::LOCATION], "/");
+    assert_eq!(r.status(), StatusCode::OK);
     let set = r.headers()[header::SET_COOKIE].to_str().unwrap();
     assert!(set.starts_with(&cookie()), "{set}");
     assert!(

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use axum::extract::{Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::{assets, App};
@@ -78,7 +78,15 @@ pub async fn login(State(app): State<Arc<App>>, Query(q): Query<Login>) -> Respo
         cookie_name(&app),
         app.token
     );
-    let mut response = Redirect::to("/").into_response();
+    // A page that moves on by itself rather than a redirect: when the
+    // browser arrives from the file opened by xdg-open, a redirect chain
+    // counts as cross-site and the SameSite=Strict cookie would be left off
+    // the request for `/`. A navigation started by this page is same-site.
+    let mut response = Html(
+        "<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0;url=/\">\
+         <title>VortexSSH</title><a href=\"/\">Open VortexSSH</a>\n",
+    )
+    .into_response();
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
