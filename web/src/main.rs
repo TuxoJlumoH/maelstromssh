@@ -3,7 +3,7 @@
 //! the CLI, TUI and GUI.
 //!
 //! Only this machine can connect, and every request needs the random token
-//! from the printed link (exchanged for a cookie on first use).
+//! from the printed link (see `auth`).
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -56,6 +56,8 @@ pub struct App {
     /// session that a terminal tab opened.
     pub conns: Mutex<HashMap<u64, Arc<conn::Conn>>>,
     pub next_id: AtomicU64,
+    /// One-time download tickets (see `api::download_ticket`).
+    pub tickets: Mutex<HashMap<String, api::Ticket>>,
 }
 
 impl App {
@@ -93,9 +95,11 @@ async fn main() -> Result<()> {
         port,
         conns: Mutex::default(),
         next_id: AtomicU64::new(1),
+        tickets: Mutex::default(),
     });
 
-    let url = format!("http://127.0.0.1:{port}/login?token={}", app.token);
+    // The token goes in the fragment, which the browser never sends anywhere.
+    let url = format!("http://127.0.0.1:{port}/#token={}", app.token);
     println!("VortexSSH web UI: {url}");
     println!("Only this machine can connect. Keep the link private; Ctrl-C stops the server.");
     let opener = if args.no_browser {
@@ -132,19 +136,19 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/hosts", get(api::hosts))
         .route("/api/profiles", post(api::save_profile))
         .route("/api/profiles/{name}", delete(api::delete_profile))
-        .route("/api/conn/{id}/download", get(api::download))
+        .route("/api/conn/{id}/download", post(api::download_ticket))
         .route(
             "/api/conn/{id}/upload",
             put(api::upload).layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .layer(middleware::from_fn_with_state(
             app.clone(),
-            auth::require_session,
+            auth::require_token,
         ));
 
     Router::new()
-        .route("/", get(auth::index))
-        .route("/login", get(auth::login))
+        .route("/", get(assets::index))
+        .route("/download/{ticket}", get(api::download))
         .route("/assets/{file}", get(assets::serve))
         .merge(api)
         .layer(middleware::from_fn_with_state(

@@ -40,11 +40,13 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ),
 ];
 
-pub fn index() -> Response {
+/// `GET /`: the app page. It holds no secrets; everything it loads needs the
+/// token, which the page reads from the link's fragment.
+pub async fn index() -> Response {
     Html(INDEX).into_response()
 }
 
-/// `GET /assets/{file}`: public, so the login error page can be styled.
+/// `GET /assets/{file}`: public, like the page itself.
 pub async fn serve(Path(file): Path<String>) -> Response {
     match FILES.iter().find(|(name, _, _)| *name == file) {
         Some((_, mime, body)) => ([(header::CONTENT_TYPE, *mime)], *body).into_response(),

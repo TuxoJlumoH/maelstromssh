@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
@@ -11,6 +12,7 @@ use axum::response::Response;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+use crate::api::Ticket;
 use crate::{router, App};
 
 const PORT: u16 = 18999;
@@ -23,11 +25,23 @@ fn app() -> Arc<App> {
         port: PORT,
         conns: Mutex::new(HashMap::new()),
         next_id: AtomicU64::new(1),
+        tickets: Mutex::new(HashMap::new()),
     })
 }
 
-fn cookie() -> String {
-    format!("vortexssh_{PORT}={}", "a".repeat(64))
+fn bearer() -> String {
+    format!("Bearer {}", "a".repeat(64))
+}
+
+/// The headers of a WebSocket upgrade, offering `protocols`.
+fn ws_headers(protocols: &str) -> Vec<(&str, &str)> {
+    vec![
+        ("upgrade", "websocket"),
+        ("connection", "upgrade"),
+        ("sec-websocket-version", "13"),
+        ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+        ("sec-websocket-protocol", protocols),
+    ]
 }
 
 /// A request with the right Host, plus the given headers.
@@ -52,74 +66,82 @@ async fn text(response: Response) -> String {
 }
 
 #[tokio::test]
-async fn login_sets_a_cookie_and_redirects() {
-    let token = "a".repeat(64);
-    let r = send(request(
-        Method::GET,
-        &format!("/login?token={token}"),
-        &[],
-        Body::empty(),
-    ))
-    .await;
-    assert_eq!(r.status(), StatusCode::OK);
-    let set = r.headers()[header::SET_COOKIE].to_str().unwrap();
-    assert!(set.starts_with(&cookie()), "{set}");
-    assert!(
-        set.contains("HttpOnly") && set.contains("SameSite=Strict"),
-        "{set}"
-    );
-}
-
-#[tokio::test]
-async fn wrong_or_missing_token_is_refused() {
-    let wrong = format!("/login?token={}", "b".repeat(64));
-    let r = send(request(Method::GET, &wrong, &[], Body::empty())).await;
-    assert_eq!(r.status(), StatusCode::FORBIDDEN);
-    assert!(!r.headers().contains_key(header::SET_COOKIE));
-
-    let r = send(request(Method::GET, "/login", &[], Body::empty())).await;
-    assert!(r.status().is_client_error());
-    assert!(!r.headers().contains_key(header::SET_COOKIE));
-}
-
-#[tokio::test]
-async fn the_app_needs_a_session() {
+async fn the_page_is_public_and_sets_no_cookie() {
     let r = send(request(Method::GET, "/", &[], Body::empty())).await;
-    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
-    assert!(!text(r).await.contains("app.js"));
-
-    let bad = format!("vortexssh_{PORT}={}", "b".repeat(64));
-    let other_port = format!("vortexssh_8022={}", "a".repeat(64));
-    for c in [bad.as_str(), other_port.as_str()] {
-        let r = send(request(Method::GET, "/", &[("cookie", c)], Body::empty())).await;
-        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{c}");
-    }
-
-    let c = format!("theme=dark; {}", cookie());
-    let r = send(request(Method::GET, "/", &[("cookie", &c)], Body::empty())).await;
     assert_eq!(r.status(), StatusCode::OK);
+    assert!(!r.headers().contains_key(header::SET_COOKIE));
     assert!(text(r).await.contains("/assets/app.js"));
+
+    for uri in ["/login", "/login?token=x"] {
+        let r = send(request(Method::GET, uri, &[], Body::empty())).await;
+        assert!(r.status().is_client_error(), "{uri}");
+        assert!(!r.headers().contains_key(header::SET_COOKIE), "{uri}");
+    }
 }
 
 #[tokio::test]
-async fn api_routes_need_a_session() {
+async fn api_routes_need_the_token() {
     let routes = [
         (Method::GET, "/api/hosts"),
         (Method::POST, "/api/profiles"),
         (Method::DELETE, "/api/profiles/x"),
-        (Method::GET, "/api/conn/1/download?path=/etc/passwd"),
+        (Method::POST, "/api/conn/1/download"),
         (Method::PUT, "/api/conn/1/upload?path=/tmp/x"),
         (Method::GET, "/ws"),
     ];
+    let wrong = format!("Bearer {}", "b".repeat(64));
+    let short = format!("Bearer {}", "a".repeat(63));
+    let bare = "a".repeat(64);
+    // A cookie is not enough any more, whatever its name.
+    let cookie = format!("vortexssh_{PORT}={}", "a".repeat(64));
     for (method, uri) in routes {
-        let r = send(request(
-            method.clone(),
-            uri,
-            &[("origin", ORIGIN)],
-            Body::empty(),
-        ))
-        .await;
-        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{method} {uri}");
+        for auth in [
+            None,
+            Some(wrong.as_str()),
+            Some(short.as_str()),
+            Some(bare.as_str()),
+        ] {
+            let mut headers = vec![("origin", ORIGIN), ("cookie", cookie.as_str())];
+            if let Some(a) = auth {
+                headers.push(("authorization", a));
+            }
+            let r = send(request(method.clone(), uri, &headers, Body::empty())).await;
+            assert_eq!(
+                r.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} {auth:?}"
+            );
+        }
+    }
+    let b = bearer();
+    let r = send(request(
+        Method::GET,
+        "/api/hosts",
+        &[("authorization", &b), ("origin", "http://evil.example")],
+        Body::empty(),
+    ))
+    .await;
+    // GETs change nothing, so they don't need an Origin; this one only
+    // fails if the token check let it through and the handler errored.
+    assert_ne!(r.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn websockets_take_the_token_as_a_subprotocol() {
+    let token = format!("token-{}", "a".repeat(64));
+    let good = format!("vortexssh, {token}");
+    let wrong = format!("vortexssh, token-{}", "b".repeat(64));
+    // Without a real connection to upgrade, a request that passes the
+    // checks gets 426 from the WebSocket handler.
+    for (protocols, expected) in [
+        (good.as_str(), StatusCode::UPGRADE_REQUIRED),
+        (wrong.as_str(), StatusCode::UNAUTHORIZED),
+        ("vortexssh", StatusCode::UNAUTHORIZED),
+    ] {
+        let mut headers = ws_headers(protocols);
+        headers.push(("origin", ORIGIN));
+        let r = send(request(Method::GET, "/ws", &headers, Body::empty())).await;
+        assert_eq!(r.status(), expected, "{protocols}");
     }
 }
 
@@ -127,19 +149,24 @@ async fn api_routes_need_a_session() {
 async fn foreign_hosts_are_refused() {
     // DNS rebinding: a page on evil.example resolving to 127.0.0.1.
     for host in ["evil.example:18999", "127.0.0.1:8022", "127.0.0.1", ""] {
-        let req = Request::builder()
-            .uri("/")
-            .header(header::HOST, host)
-            .header(header::COOKIE, cookie())
-            .body(Body::empty())
-            .unwrap();
-        let r = send(req).await;
-        assert_eq!(r.status(), StatusCode::MISDIRECTED_REQUEST, "{host:?}");
+        for uri in ["/", "/api/hosts", "/download/x"] {
+            let req = Request::builder()
+                .uri(uri)
+                .header(header::HOST, host)
+                .header(header::AUTHORIZATION, bearer())
+                .body(Body::empty())
+                .unwrap();
+            let r = send(req).await;
+            assert_eq!(
+                r.status(),
+                StatusCode::MISDIRECTED_REQUEST,
+                "{host:?} {uri}"
+            );
+        }
     }
     let req = Request::builder()
         .uri("/")
         .header(header::HOST, "localhost:18999")
-        .header(header::COOKIE, cookie())
         .body(Body::empty())
         .unwrap();
     assert_eq!(send(req).await.status(), StatusCode::OK);
@@ -147,28 +174,22 @@ async fn foreign_hosts_are_refused() {
 
 #[tokio::test]
 async fn changes_and_websockets_need_this_origin() {
-    let c = cookie();
-    let ws = [
-        ("cookie", c.as_str()),
-        ("upgrade", "websocket"),
-        ("connection", "upgrade"),
-        ("sec-websocket-version", "13"),
-        ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
-    ];
+    let b = bearer();
+    let token = format!("vortexssh, token-{}", "a".repeat(64));
     for origin in [
         None,
         Some("http://evil.example"),
         Some("http://127.0.0.1:8022"),
         Some("null"),
     ] {
-        let mut headers = ws.to_vec();
+        let mut headers = ws_headers(&token);
         if let Some(o) = origin {
             headers.push(("origin", o));
         }
         let r = send(request(Method::GET, "/ws", &headers, Body::empty())).await;
         assert_eq!(r.status(), StatusCode::FORBIDDEN, "ws from {origin:?}");
 
-        let mut headers = vec![("cookie", c.as_str()), ("content-type", "application/json")];
+        let mut headers = vec![("authorization", b.as_str())];
         if let Some(o) = origin {
             headers.push(("origin", o));
         }
@@ -182,34 +203,79 @@ async fn changes_and_websockets_need_this_origin() {
         assert_eq!(r.status(), StatusCode::FORBIDDEN, "delete from {origin:?}");
     }
     // The real page gets through the checks (to the 404 for a missing
-    // connection, or the WebSocket handler).
+    // connection).
     let r = send(request(
         Method::PUT,
         "/api/conn/99/upload?path=/tmp/x",
-        &[("cookie", &c), ("origin", ORIGIN)],
+        &[("authorization", &b), ("origin", ORIGIN)],
         Body::from("x"),
     ))
     .await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
     let r = send(request(
-        Method::GET,
-        "/api/conn/99/download?path=/tmp/x",
-        &[("cookie", &c)],
-        Body::empty(),
+        Method::POST,
+        "/api/conn/99/download",
+        &[
+            ("authorization", &b),
+            ("origin", ORIGIN),
+            ("content-type", "application/json"),
+        ],
+        Body::from(r#"{"path":"/tmp/x"}"#),
     ))
     .await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
+async fn download_tickets_are_one_time_and_expire() {
+    let app = app();
+    let get = |ticket: &str| {
+        router(app.clone()).oneshot(request(
+            Method::GET,
+            &format!("/download/{ticket}"),
+            &[],
+            Body::empty(),
+        ))
+    };
+    let now = Instant::now();
+    {
+        let mut tickets = app.tickets.lock().unwrap();
+        for (name, expires) in [("fresh", now + Duration::from_secs(60)), ("old", now)] {
+            tickets.insert(
+                name.to_string(),
+                Ticket {
+                    conn: 99,
+                    path: "/tmp/x".into(),
+                    expires,
+                },
+            );
+        }
+    }
+    // The ticket is accepted (connection 99 doesn't exist) and used up.
+    let r = get("fresh").await.unwrap();
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    assert!(text(r).await.contains("connection closed"));
+    for ticket in ["fresh", "old", "unknown"] {
+        let r = get(ticket).await.unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_FOUND, "{ticket}");
+        assert!(text(r).await.contains("expired"), "{ticket}");
+    }
+}
+
+#[tokio::test]
 async fn security_headers_on_every_response() {
-    let c = cookie();
+    let b = bearer();
     let requests = [
-        request(Method::GET, "/", &[("cookie", &c)], Body::empty()),
         request(Method::GET, "/", &[], Body::empty()),
         request(Method::GET, "/assets/app.js", &[], Body::empty()),
-        request(Method::GET, "/login?token=x", &[], Body::empty()),
         request(Method::GET, "/api/hosts", &[], Body::empty()),
+        request(
+            Method::GET,
+            "/api/hosts",
+            &[("authorization", &b)],
+            Body::empty(),
+        ),
+        request(Method::GET, "/download/x", &[], Body::empty()),
     ];
     for req in requests {
         let uri = req.uri().to_string();
@@ -276,9 +342,9 @@ async fn profiles_and_hosts() {
     let profiles_dir = home.path().join(".config/vortexssh/profiles");
 
     let app = app();
-    let c = cookie();
+    let b = bearer();
     let call = |method: Method, uri: &str, body: Option<Value>| {
-        let mut headers = vec![("cookie", c.as_str()), ("origin", ORIGIN)];
+        let mut headers = vec![("authorization", b.as_str()), ("origin", ORIGIN)];
         let body = match body {
             Some(v) => {
                 headers.push(("content-type", "application/json"));

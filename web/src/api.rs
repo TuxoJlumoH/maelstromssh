@@ -2,6 +2,7 @@
 //! streaming file downloads and uploads over an open connection.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
@@ -190,20 +191,79 @@ pub struct FilePath {
     path: String,
 }
 
-/// `GET /api/conn/{id}/download?path=…`: streams a remote file.
-pub async fn download(
+/// How long a download ticket can wait for the browser to use it.
+const TICKET_LIFETIME: Duration = Duration::from_secs(60);
+
+/// A one-time permission to download `path` over connection `conn`.
+pub struct Ticket {
+    pub(crate) conn: u64,
+    pub(crate) path: String,
+    pub(crate) expires: Instant,
+}
+
+#[derive(Deserialize)]
+pub struct TicketRequest {
+    path: String,
+}
+
+/// `POST /api/conn/{id}/download`: checks that `path` is a readable file
+/// and returns a one-time ticket for `GET /download/{ticket}`. Downloads are
+/// started by the browser itself (so they stream to disk), and it can't add
+/// the token header to those requests.
+pub async fn download_ticket(
     State(app): State<Arc<App>>,
     Path(id): Path<u64>,
-    Query(q): Query<FilePath>,
-) -> ApiResult<Response> {
+    Json(q): Json<TicketRequest>,
+) -> ApiResult<Json<Value>> {
     let conn = app
         .conn(id)
         .ok_or((StatusCode::NOT_FOUND, "connection closed".into()))?;
     let sftp = conn.sftp().await.map_err(server_error)?;
-    let size = sftp::file_size(sftp, &q.path).await.map_err(bad_request)?;
-    let file = sftp::open_read(sftp, &q.path).await.map_err(bad_request)?;
+    // Catch errors here, where the page can show them; the browser's
+    // download list would only say "failed".
+    drop(sftp::open_read(sftp, &q.path).await.map_err(bad_request)?);
+    let ticket = crate::auth::new_token().map_err(server_error)?;
+    let now = Instant::now();
+    let mut tickets = app.tickets.lock().unwrap_or_else(|p| p.into_inner());
+    tickets.retain(|_, t| t.expires > now);
+    tickets.insert(
+        ticket.clone(),
+        Ticket {
+            conn: id,
+            path: q.path,
+            expires: now + TICKET_LIFETIME,
+        },
+    );
+    Ok(Json(json!({ "ticket": ticket })))
+}
 
-    let name = q.path.rsplit('/').next().unwrap_or("download");
+/// `GET /download/{ticket}`: streams the remote file a ticket allows.
+pub async fn download(
+    State(app): State<Arc<App>>,
+    Path(ticket): Path<String>,
+) -> ApiResult<Response> {
+    let gone = || {
+        (
+            StatusCode::NOT_FOUND,
+            "this download link has expired".to_string(),
+        )
+    };
+    let ticket = app
+        .tickets
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&ticket)
+        .filter(|t| t.expires > Instant::now())
+        .ok_or_else(gone)?;
+    let conn = app
+        .conn(ticket.conn)
+        .ok_or((StatusCode::NOT_FOUND, "connection closed".into()))?;
+    let path = ticket.path;
+    let sftp = conn.sftp().await.map_err(server_error)?;
+    let size = sftp::file_size(sftp, &path).await.map_err(bad_request)?;
+    let file = sftp::open_read(sftp, &path).await.map_err(bad_request)?;
+
+    let name = path.rsplit('/').next().unwrap_or("download");
     let mut response =
         Body::from_stream(ReaderStream::with_capacity(file, 64 * 1024)).into_response();
     let headers = response.headers_mut();

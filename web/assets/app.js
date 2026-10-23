@@ -22,13 +22,40 @@ function el(tag, props = {}, ...children) {
   return node;
 }
 
+// The access token arrives in the link's #fragment (never sent to any
+// server) and is kept in localStorage, which only this origin, i.e. this
+// port, can read. It goes with every request as a header; there is no
+// cookie, because browsers send cookies to every port on 127.0.0.1.
+const TOKEN_KEY = "vortexssh-token";
+{
+  const match = location.hash.match(/token=([0-9a-f]+)/);
+  if (match) {
+    localStorage.setItem(TOKEN_KEY, match[1]);
+    history.replaceState(null, "", "/");
+  }
+}
+const token = () => localStorage.getItem(TOKEN_KEY) || "";
+
+/// Shown when there is no valid token (e.g. the server was restarted).
+/// Only forgets `refused`, not a newer token another tab stored meanwhile.
+function needLink(refused) {
+  if (token() === refused) localStorage.removeItem(TOKEN_KEY);
+  $("#welcome").replaceChildren(
+    el("img", { src: "/assets/icon.svg", alt: "", width: "72", height: "72" }),
+    el("h1", { text: "VortexSSH" }),
+    el("p", { class: "muted", text: "Open the link that vortexssh-web printed when it started." }));
+  for (const b of document.querySelectorAll("#sidebar button")) b.disabled = true;
+}
+
 async function api(method, url, body) {
-  const options = { method, headers: {} };
+  const used = token();
+  const options = { method, headers: { Authorization: `Bearer ${used}` } };
   if (body !== undefined) {
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(body);
   }
   const response = await fetch(url, options);
+  if (response.status === 401) needLink(used);
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || `${response.status} ${response.statusText}`);
@@ -269,7 +296,7 @@ class Tab {
     this.setState("connecting", `Connecting to ${this.title}…`);
     this.refit();
 
-    const ws = new WebSocket(`ws://${location.host}/ws`);
+    const ws = new WebSocket(`ws://${location.host}/ws`, ["vortexssh", `token-${token()}`]);
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {
@@ -535,12 +562,18 @@ class Tab {
     this.fileRows.replaceChildren(...rows);
   }
 
-  download(path) {
-    const url = `/api/conn/${this.conn}/download?path=${encodeURIComponent(path)}`;
-    const link = el("a", { href: url, download: path.split("/").pop() });
-    document.body.append(link);
-    link.click();
-    link.remove();
+  /// The browser downloads by itself (straight to disk) with a one-time
+  /// ticket, since it can't send the token header for a plain link.
+  async download(path) {
+    try {
+      const { ticket } = await api("POST", `/api/conn/${this.conn}/download`, { path });
+      const link = el("a", { href: `/download/${ticket}`, download: path.split("/").pop() });
+      document.body.append(link);
+      link.click();
+      link.remove();
+    } catch (e) {
+      this.filesMessage.textContent = e.message;
+    }
   }
 
   async uploadFiles(files) {
@@ -583,6 +616,7 @@ class Tab {
       this.uploads.add(xhr);
       xhr.onloadend = () => this.uploads.delete(xhr);
       xhr.open("PUT", `/api/conn/${this.conn}/upload?path=${encodeURIComponent(path)}`);
+      xhr.setRequestHeader("Authorization", `Bearer ${token()}`);
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) progress.value = (100 * e.loaded) / e.total;
       };

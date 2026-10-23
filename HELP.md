@@ -289,8 +289,8 @@ vortexssh-web [--port PORT] [--no-browser]
 
 It listens on **127.0.0.1 only** (port 8022, or a free port if that is
 taken), prints a login link with a random token, and opens it in your
-browser. The link sets a cookie for that browser; restarting the server
-makes old links and cookies invalid.
+browser. The page remembers the token in that browser; restarting the
+server makes old links invalid, and the page then asks for the new one.
 
 - **Connect**: *New connection* (`user@host` or an ssh_config alias, optional
   port and key file), a saved profile, or a `~/.ssh/config` alias from the
@@ -305,12 +305,17 @@ makes old links and cookies invalid.
 - **Profiles**: `+` creates one, the ✎ button edits or deletes one. Forwards
   are entered one per line, e.g. `-L 8080:localhost:80`.
 
-Security: requests must carry the session cookie and name this server in
-`Host` (blocks DNS rebinding); WebSockets and changes must come from the app's
+Security: every request must carry the token and name this server in `Host`
+(blocks DNS rebinding); WebSockets and changes must come from the app's
 own page (`Origin` check). The browser is opened through a private (0600)
 redirect file, so the token never appears in a process list. Passwords are
 never stored. Anyone who can run programs as you can still reach your SSH
 keys anyway; the web UI does not change that.
+
+The token travels in a request header, never in a cookie: browsers send
+cookies for 127.0.0.1 to every port, so other programs there could read it.
+In the link it sits after `#`, a part browsers never send to a server.
+Downloads use one-time links that expire after a minute.
 
 ---
 

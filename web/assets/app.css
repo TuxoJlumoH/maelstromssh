@@ -315,11 +315,6 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
   word-break: break-all;
 }
 
-/* Login error page */
-
-body.notice { align-items: center; justify-content: center; text-align: center; }
-body.notice main { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 420px; padding: 20px; }
-
 @media (max-width: 760px) {
   #sidebar { display: none; }
   .panel { position: absolute; inset: 0; width: auto; max-width: none; z-index: 2; }

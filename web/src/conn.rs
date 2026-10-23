@@ -278,6 +278,7 @@ impl Prompter for WebPrompter {
 pub async fn ws(State(app): State<Arc<App>>, upgrade: WebSocketUpgrade) -> Response {
     upgrade
         .max_message_size(1 << 20)
+        .protocols([crate::auth::WS_PROTOCOL])
         .on_upgrade(move |socket| run(app, socket))
 }
 
