@@ -10,12 +10,14 @@ use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::routing::{delete, get, post, put};
 use axum::{middleware, Router};
 use clap::Parser;
 use tokio::net::TcpListener;
+use tokio::signal::unix::{signal, SignalKind};
 use tracing_subscriber::EnvFilter;
 
 mod api;
@@ -24,6 +26,9 @@ mod auth;
 mod conn;
 #[cfg(test)]
 mod tests;
+
+/// How long the browser has to read the redirect file before it is deleted.
+const REDIRECT_FILE_LIFETIME: Duration = Duration::from_secs(30);
 
 /// Tried first when `--port` is not given; a free port is used if it is taken.
 const DEFAULT_PORT: u16 = 8022;
@@ -98,10 +103,22 @@ async fn main() -> Result<()> {
     } else {
         open_browser(&url, port)
     };
+    if let Some(path) = opener.clone() {
+        // The browser reads the file right away; don't leave the token on
+        // disk for the whole session.
+        tokio::spawn(async move {
+            tokio::time::sleep(REDIRECT_FILE_LIFETIME).await;
+            let _ = std::fs::remove_file(path);
+        });
+    }
 
+    let mut terminate = signal(SignalKind::terminate()).context("SIGTERM handler")?;
+    let mut hangup = signal(SignalKind::hangup()).context("SIGHUP handler")?;
     let result = tokio::select! {
         r = axum::serve(listener, router(app)) => r.context("web server"),
         _ = tokio::signal::ctrl_c() => Ok(()),
+        _ = terminate.recv() => Ok(()),
+        _ = hangup.recv() => Ok(()),
     };
     if let Some(path) = opener {
         let _ = std::fs::remove_file(path);
