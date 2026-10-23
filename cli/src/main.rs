@@ -12,6 +12,7 @@ use vortexssh_core::config::{
 };
 use vortexssh_core::prompt::TtyPrompter;
 use vortexssh_core::serial;
+use vortexssh_core::session_log::SessionLog;
 use vortexssh_core::ssh::{ChannelMsg, KnownHosts, Session};
 use vortexssh_core::target::{
     auth_from_flags, local_user, split_target, AuthChoice, Target, TargetArgs,
@@ -50,6 +51,11 @@ enum Command {
         /// Dynamic (SOCKS5) forward: [bind:]port (repeatable).
         #[arg(short = 'D', long = "dynamic-forward", value_name = "SPEC")]
         dynamic: Vec<String>,
+        /// Save everything the session prints to FILE (appended). A folder
+        /// gets a dated file; &H, &P, &Y, &M, &D, &T in the name become the
+        /// host, port, date and time.
+        #[arg(long, value_name = "FILE")]
+        log: Option<PathBuf>,
     },
     /// Open a serial (COM) port as a terminal, e.g. a router's console.
     #[command(after_help = LINE_KEYS)]
@@ -62,6 +68,11 @@ enum Command {
         /// List the serial ports on this machine and exit.
         #[arg(short, long)]
         list: bool,
+        /// Save everything the session prints to FILE (appended). A folder
+        /// gets a dated file; &H, &P, &Y, &M, &D, &T in the name become the
+        /// host, port, date and time.
+        #[arg(long, value_name = "FILE")]
+        log: Option<PathBuf>,
     },
     /// Connect over Telnet (not encrypted), e.g. to an old switch.
     #[command(after_help = LINE_KEYS)]
@@ -70,6 +81,11 @@ enum Command {
         /// Default 23.
         #[arg(default_value_t = 23)]
         port: u16,
+        /// Save everything the session prints to FILE (appended). A folder
+        /// gets a dated file; &H, &P, &Y, &M, &D, &T in the name become the
+        /// host, port, date and time.
+        #[arg(long, value_name = "FILE")]
+        log: Option<PathBuf>,
     },
     /// Open a raw TCP connection: bytes go both ways unchanged.
     #[command(after_help = LINE_KEYS)]
@@ -77,6 +93,11 @@ enum Command {
         host: String,
         #[arg(value_parser = clap::value_parser!(u16).range(1..))]
         port: u16,
+        /// Save everything the session prints to FILE (appended). A folder
+        /// gets a dated file; &H, &P, &Y, &M, &D, &T in the name become the
+        /// host, port, date and time.
+        #[arg(long, value_name = "FILE")]
+        log: Option<PathBuf>,
     },
     /// Manage saved connection profiles.
     Profile {
@@ -205,32 +226,38 @@ async fn main() -> Result<()> {
             local,
             remote,
             dynamic,
+            log,
         } => {
             let mut target = target.resolve_any()?;
             let forwards = parse_forwards(local, remote, dynamic)?;
             match target.protocol {
                 Protocol::Ssh => {
                     target.forwards.extend(forwards);
-                    connect(target).await
+                    connect(target, log).await
                 }
                 Protocol::Serial => {
                     if !forwards.is_empty() {
                         bail!("port forwards need an SSH connection");
                     }
-                    open_serial(&target.host, target.serial.unwrap_or_default()).await
+                    open_serial(&target.host, target.serial.unwrap_or_default(), log).await
                 }
                 Protocol::Telnet | Protocol::Raw => {
                     if !forwards.is_empty() {
                         bail!("port forwards need an SSH connection");
                     }
-                    open_tcp(target.protocol, &target.host, target.port).await
+                    open_tcp(target.protocol, &target.host, target.port, log).await
                 }
             }
         }
-        Command::Telnet { host, port } => open_tcp(Protocol::Telnet, &host, port).await,
-        Command::Raw { host, port } => open_tcp(Protocol::Raw, &host, port).await,
-        Command::Serial { device, line, list } => match device {
-            Some(device) if !list => open_serial(&device, line.into()).await,
+        Command::Telnet { host, port, log } => open_tcp(Protocol::Telnet, &host, port, log).await,
+        Command::Raw { host, port, log } => open_tcp(Protocol::Raw, &host, port, log).await,
+        Command::Serial {
+            device,
+            line,
+            list,
+            log,
+        } => match device {
+            Some(device) if !list => open_serial(&device, line.into(), log).await,
             _ => serial_list(),
         },
         Command::Profile { cmd } => match cmd {
@@ -323,7 +350,26 @@ async fn connect_session(target: &Target) -> Result<Session> {
     .map_err(Into::into)
 }
 
-async fn connect(target: Target) -> Result<()> {
+/// Opens the `--log` file, if one was asked for.
+fn open_log(path: Option<PathBuf>, target: &Target) -> Result<Option<SessionLog>> {
+    let Some(path) = path else { return Ok(None) };
+    let log = SessionLog::create(&path, &target.label(), &target.host, target.port)?;
+    eprintln!("Logging to {}", log.path().display());
+    Ok(Some(log))
+}
+
+/// Writes session output to the log, reporting (once) if that fails.
+fn log_output(log: &mut Option<SessionLog>, data: &[u8]) {
+    if let Some(log) = log {
+        log.write(data);
+        if let Some(e) = log.take_error() {
+            eprint!("\r\n[{e}]\r\n");
+        }
+    }
+}
+
+async fn connect(target: Target, log: Option<PathBuf>) -> Result<()> {
+    let mut log = open_log(log, &target)?;
     let mut session = connect_session(&target).await?;
 
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
@@ -341,7 +387,7 @@ async fn connect(target: Target) -> Result<()> {
     }
 
     terminal::enable_raw_mode().context("enabling raw terminal mode")?;
-    let result = pump_shell_io(&mut channel, &mut term).await;
+    let result = pump_shell_io(&mut channel, &mut term, &mut log).await;
     terminal::disable_raw_mode().ok();
 
     session.disconnect().await.ok();
@@ -351,6 +397,7 @@ async fn connect(target: Target) -> Result<()> {
 async fn pump_shell_io(
     channel: &mut vortexssh_core::ssh::Channel<vortexssh_core::ssh::Msg>,
     term: &mut Terminal,
+    log: &mut Option<SessionLog>,
 ) -> Result<()> {
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
@@ -376,10 +423,12 @@ async fn pump_shell_io(
                 match msg {
                     Some(ChannelMsg::Data { data }) => {
                         term.feed(&data);
+                        log_output(log, &data);
                         stdout.write_all(&data).await?;
                         stdout.flush().await?;
                     }
                     Some(ChannelMsg::ExtendedData { data, .. }) => {
+                        log_output(log, &data);
                         stdout.write_all(&data).await?;
                         stdout.flush().await?;
                     }
@@ -418,7 +467,8 @@ fn serial_list() -> Result<()> {
 /// is open.
 const ESCAPE: u8 = 0x1d;
 
-async fn open_serial(device: &str, settings: SerialSettings) -> Result<()> {
+async fn open_serial(device: &str, settings: SerialSettings, log: Option<PathBuf>) -> Result<()> {
+    let log = open_log(log, &Target::serial(device, settings))?;
     let line = serial::Line::open(device, &settings)?;
     eprintln!("Connected to {device} ({settings}). {LINE_KEYS}");
     let link = Link {
@@ -427,13 +477,15 @@ async fn open_serial(device: &str, settings: SerialSettings) -> Result<()> {
         filter: Filter::Raw,
         breaker: Some(line.breaker),
         what: "the serial port",
+        log,
     };
     run_link(link).await?;
     eprintln!("\r\nDisconnected from {device}.");
     Ok(())
 }
 
-async fn open_tcp(protocol: Protocol, host: &str, port: u16) -> Result<()> {
+async fn open_tcp(protocol: Protocol, host: &str, port: u16, log: Option<PathBuf>) -> Result<()> {
+    let log = open_log(log, &Target::tcp(protocol, host, port))?;
     let size = terminal::size().unwrap_or((80, 24));
     let term_type = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());
     let line = TcpLine::connect(protocol, host, port, &term_type, size).await?;
@@ -448,6 +500,7 @@ async fn open_tcp(protocol: Protocol, host: &str, port: u16) -> Result<()> {
         filter: line.filter,
         breaker: None,
         what: "the connection",
+        log,
     };
     run_link(link).await?;
     eprintln!("\r\nConnection to {host} closed.");
@@ -463,6 +516,7 @@ struct Link {
     breaker: Option<serial::Breaker>,
     /// "the serial port", for messages.
     what: &'static str,
+    log: Option<SessionLog>,
 }
 
 async fn run_link(link: Link) -> Result<()> {
@@ -491,6 +545,7 @@ async fn pump_link_io(link: Link) -> Result<()> {
         mut filter,
         breaker,
         what,
+        mut log,
     } = link;
     // Writing may wait for the device (flow control) or the network; it
     // must not stop output from being read.
@@ -571,6 +626,7 @@ async fn pump_link_io(link: Link) -> Result<()> {
                 if !reply.is_empty() && tx.send(reply).await.is_err() {
                     break;
                 }
+                log_output(&mut log, &data);
                 stdout.write_all(&data).await?;
                 stdout.flush().await?;
             }

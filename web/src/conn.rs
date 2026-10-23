@@ -33,6 +33,7 @@ use vortexssh_core::config::{
 };
 use vortexssh_core::prompt::{KiPrompt, Prompter};
 use vortexssh_core::serial::Line;
+use vortexssh_core::session_log::SessionLog;
 use vortexssh_core::sftp::{self, SftpSession};
 use vortexssh_core::ssh::{ChannelMsg, KnownHosts, Session};
 use vortexssh_core::target::{Target, TargetArgs};
@@ -137,6 +138,43 @@ type OutTx = mpsc::UnboundedSender<Value>;
 /// Terminal output frames waiting for the browser.
 type TermTx = mpsc::Sender<Vec<u8>>;
 
+/// Where a session's terminal output goes: the browser, and the log if
+/// there is one.
+struct TermOut {
+    tx: TermTx,
+    log: Option<SessionLog>,
+    /// For reporting a failed log write.
+    out: OutTx,
+}
+
+impl TermOut {
+    /// Queues output for the browser; check [`capacity`](Self::capacity)
+    /// first. Fails once the tab has gone.
+    fn send(&mut self, data: Vec<u8>) -> Result<(), ()> {
+        if let Some(log) = &mut self.log {
+            log.write(&data);
+            if let Some(e) = log.take_error() {
+                send(&self.out, json!({ "type": "warning", "message": e }));
+            }
+        }
+        self.tx.try_send(data).map_err(|_| ())
+    }
+
+    fn capacity(&self) -> usize {
+        self.tx.capacity()
+    }
+
+    async fn reserve(&self) -> Result<(), ()> {
+        self.tx.reserve().await.map(drop).map_err(|_| ())
+    }
+
+    /// The log file, as shown to the user.
+    fn log_path(&self) -> Option<String> {
+        let log = self.log.as_ref()?;
+        Some(vortexssh_core::paths::collapse_home(log.path()))
+    }
+}
+
 /// How many terminal frames may wait for the browser before the shell stops
 /// reading from the server. Frames are at most one SSH packet (~32 KiB).
 const TERM_QUEUE: usize = 64;
@@ -180,6 +218,9 @@ enum In {
         /// Open a Telnet or raw TCP connection instead.
         #[serde(default)]
         tcp: Option<TcpForm>,
+        /// Save the session output in the log folder.
+        #[serde(default)]
+        log: bool,
         cols: u32,
         rows: u32,
     },
@@ -387,6 +428,7 @@ async fn run(app: Arc<App>, socket: WebSocket) {
                 profile,
                 serial,
                 tcp,
+                log,
                 cols,
                 rows,
             } => {
@@ -416,6 +458,7 @@ async fn run(app: Arc<App>, socket: WebSocket) {
                 });
                 let tab = Tab {
                     term,
+                    log,
                     input,
                     cancel: cancel.clone(),
                 };
@@ -553,6 +596,8 @@ async fn sftp_op(conn: &Conn, op: SftpOp) -> vortexssh_core::Result<Value> {
 /// keyboard input comes from, and the signal that the tab has closed.
 struct Tab {
     term: TermTx,
+    /// Whether to log the session output.
+    log: bool,
     input: mpsc::UnboundedReceiver<Input>,
     cancel: CancellationToken,
 }
@@ -576,6 +621,7 @@ async fn run_session(
 ) {
     let Tab {
         term,
+        log,
         mut input,
         cancel,
     } = tab;
@@ -591,6 +637,23 @@ async fn run_session(
                 Err(e) => return closed(e.to_string()),
             }
         }
+    };
+    let log = if log {
+        let (label, host, port) = (target.label(), target.host.clone(), target.port);
+        match tokio::task::spawn_blocking(move || SessionLog::create_default(&label, &host, port))
+            .await
+        {
+            Ok(Ok(log)) => Some(log),
+            Ok(Err(e)) => return closed(e.to_string()),
+            Err(e) => return closed(e.to_string()),
+        }
+    } else {
+        None
+    };
+    let mut term = TermOut {
+        tx: term,
+        log,
+        out: out.clone(),
     };
     match target.protocol {
         Protocol::Ssh => {}
@@ -654,7 +717,7 @@ async fn run_session(
     send(
         &out,
         json!({ "type": "ready", "conn": id, "label": target.label(),
-                "forwards": conn.forward_list().await }),
+                "forwards": conn.forward_list().await, "log": term.log_path() }),
     );
 
     // Keyboard input gets its own task: writing can wait on the server (a
@@ -692,7 +755,7 @@ async fn run_session(
             // Only read more output while the browser keeps up.
             msg = reader.wait(), if term.capacity() > 0 => match msg {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    if term.try_send(data.to_vec()).is_err() {
+                    if term.send(data.to_vec()).is_err() {
                         break "closed".to_string();
                     }
                 }
@@ -734,7 +797,7 @@ async fn run_session(
 async fn run_serial(
     target: &Target,
     out: &OutTx,
-    term: TermTx,
+    mut term: TermOut,
     mut input: mpsc::UnboundedReceiver<Input>,
     cancel: CancellationToken,
 ) -> String {
@@ -753,7 +816,7 @@ async fn run_serial(
     send(
         out,
         json!({ "type": "ready", "conn": null, "protocol": "serial", "label": target.label(),
-                "forwards": [] }),
+                "forwards": [], "log": term.log_path() }),
     );
 
     // Writing can wait on the device (flow control); it must not stop
@@ -793,7 +856,7 @@ async fn run_serial(
             r = reader.read(&mut buf), if term.capacity() > 0 => match r {
                 Ok(0) => break "The serial port closed.".to_string(),
                 Ok(n) => {
-                    if term.try_send(buf[..n].to_vec()).is_err() {
+                    if term.send(buf[..n].to_vec()).is_err() {
                         break "closed".to_string();
                     }
                 }
@@ -820,7 +883,7 @@ async fn run_tcp(
     target: &Target,
     size: (u16, u16),
     out: &OutTx,
-    term: TermTx,
+    mut term: TermOut,
     mut input: mpsc::UnboundedReceiver<Input>,
     cancel: CancellationToken,
 ) -> String {
@@ -841,7 +904,7 @@ async fn run_tcp(
     send(
         out,
         json!({ "type": "ready", "conn": null, "protocol": protocol.name(),
-                "label": target.label(), "forwards": [] }),
+                "label": target.label(), "forwards": [], "log": term.log_path() }),
     );
 
     // The server may be slow to read; writes queue here instead of
@@ -890,7 +953,7 @@ async fn run_tcp(
                     if !answer.is_empty() {
                         let _ = wire.send(answer);
                     }
-                    if !data.is_empty() && term.try_send(data).is_err() {
+                    if !data.is_empty() && term.send(data).is_err() {
                         break "closed".to_string();
                     }
                 }

@@ -9,6 +9,7 @@ pub mod net;
 pub mod paths;
 pub mod prompt;
 pub mod serial;
+pub mod session_log;
 pub mod sftp;
 pub mod ssh;
 pub mod target;

@@ -204,7 +204,7 @@ const FORWARD_HELP = {
 class Tab {
   /// `target`: what to send in `connect` ({target, port, identity},
   /// {serial: {device, baud, ...}}, {tcp: {protocol, host, port}} or
-  /// {profile}).
+  /// {profile}; `log: true` also saves the output to a file).
   constructor(title, target) {
     this.title = title;
     this.target = target;
@@ -227,6 +227,7 @@ class Tab {
     this.view = $("#tab-view").content.firstElementChild.cloneNode(true);
     views.append(this.view);
     this.status = $(".status-text", this.view);
+    this.logBadge = $(".log-badge", this.view);
     this.warnings = $(".warnings", this.view);
     this.filesPanel = $(".files-panel", this.view);
     this.forwardsPanel = $(".forwards-panel", this.view);
@@ -382,6 +383,8 @@ class Tab {
         // Serial lines and Telnet have a break signal; raw TCP has none.
         this.breakButton.hidden = !(msg.protocol === "serial" || msg.protocol === "telnet");
         this.setState("connected", msg.label);
+        this.logBadge.hidden = !msg.log;
+        this.logBadge.title = msg.log ? `Saving the output to ${msg.log}` : "";
         this.renderForwards(msg.forwards);
         this.term.focus();
         break;
@@ -913,23 +916,24 @@ function openConnect() {
 connectDialog.addEventListener("close", () => {
   if (connectDialog.returnValue !== "ok") return;
   const form = $("form", connectDialog);
+  const log = form.log.checked || undefined;
   if (protocolOf(form) === "serial") {
     const serial = serialSettings(form);
     if (!serial.device) return;
-    new Tab(serial.device.replace(/^\/dev\//, ""), { serial });
+    new Tab(serial.device.replace(/^\/dev\//, ""), { serial, log });
     return;
   }
   if (protocolOf(form) !== "ssh") {
     const tcp = tcpSettings(form);
     if (!tcp.host) return;
-    new Tab(tcp.port ? `${tcp.host}:${tcp.port}` : tcp.host, { tcp });
+    new Tab(tcp.port ? `${tcp.host}:${tcp.port}` : tcp.host, { tcp, log });
     return;
   }
   const target = form.target.value.trim();
   if (!target) return;
   const port = form.port.value ? Number(form.port.value) : undefined;
   const identity = form.identity.value.trim() || undefined;
-  new Tab(port ? `${target}:${port}` : target, { target, port, identity });
+  new Tab(port ? `${target}:${port}` : target, { target, port, identity, log });
 });
 
 // Profile dialog

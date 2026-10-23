@@ -16,6 +16,7 @@
 - **Port forwarding** — local, remote, and dynamic (SOCKS5 proxy); the web UI adds and stops forwards while connected.
 - **Serial / COM ports** — open `/dev/ttyUSB0`, `/dev/ttyACM0`, `/dev/ttyS0` etc. with any baud rate, data bits, parity, stop bits and flow control, and send a break; in the CLI and the web UI.
 - **Telnet and raw TCP** — for old switches, routers and serial-over-IP adapters: Telnet option negotiation (window size, terminal type, break), or bytes passed through unchanged.
+- **Session logging** — save everything a session prints to a file (`--log` in the CLI, a checkbox in the web UI).
 - **Key generation** — Ed25519 and RSA (configurable size).
 - **Full terminal emulator** — 256-color + truecolor, scrollback, reflow-on-resize, scroll regions, alternate screen, mouse reporting, bracketed paste.
 - **Profiles** — saved connection settings, including port forwards.
@@ -71,6 +72,7 @@ vortexssh serial /dev/ttyUSB0 -b 115200           # serial console (Ctrl-] q qui
 vortexssh profile add router /dev/ttyUSB0 --serial -b 9600
 vortexssh telnet 192.168.1.1                      # Telnet (port 23; not encrypted)
 vortexssh raw 192.168.1.50 4001                   # raw TCP
+vortexssh telnet 192.168.1.1 --log ~/logs         # save the output to ~/logs/192.168.1.1-<date>-<time>.log
 ```
 
 Serial devices usually belong to the `uucp` group on Arch (`dialout` on

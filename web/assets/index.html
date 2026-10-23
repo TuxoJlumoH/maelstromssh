@@ -49,7 +49,7 @@
   <template id="tab-view">
     <section class="view" role="tabpanel">
       <div class="toolbar">
-        <span class="status"><span class="dot"></span><span class="status-text"></span></span>
+        <span class="status"><span class="dot"></span><span class="status-text"></span><span class="log-badge" hidden>Logging</span></span>
         <div class="toolbar-buttons">
           <button class="send-break" hidden disabled title="Send a serial break signal">Send break</button>
           <button class="toggle-files" disabled>Files</button>
@@ -143,6 +143,7 @@
         </div>
         <p class="muted small tcp-note"></p>
       </div>
+      <label class="check"><input type="checkbox" name="log"> Save a log of the session output</label>
 
       <div class="buttons">
         <button value="ok" class="primary">Connect</button>

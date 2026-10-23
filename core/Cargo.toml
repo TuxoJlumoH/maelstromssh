@@ -27,6 +27,7 @@ clap = { version = "4", features = ["derive"], optional = true }
 rpassword = { version = "7", optional = true }
 tokio-serial = "5.5"
 libc = "0.2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [features]
 # CLI argument parsing for `target::TargetArgs`.

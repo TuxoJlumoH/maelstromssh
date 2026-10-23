@@ -127,6 +127,7 @@ vortexssh connect [TARGET] [OPTIONS]
 | `-L, --local-forward <SPEC>` | Local forward `[bind:]port:host:hostport` (repeatable). |
 | `-R, --remote-forward <SPEC>` | Remote forward `[bind:]port:host:hostport` (repeatable). |
 | `-D, --dynamic-forward <SPEC>` | SOCKS5 forward `[bind:]port` (repeatable). |
+| `--log <FILE>` | Save the session output to `FILE` (see *Session logs* below). |
 
 ```bash
 vortexssh connect user@example.com
@@ -143,6 +144,29 @@ vortexssh connect -L 127.0.0.1:8080:localhost:80 user@host     # bind a specific
 With a serial, Telnet or raw profile, `connect --profile NAME` opens that
 instead (see `serial`, `telnet` and `raw` below); port forwards are refused
 there.
+
+#### Session logs
+
+`connect`, `serial`, `telnet` and `raw` take `--log FILE`: everything the
+session prints (what you see on screen, including the echo of what you
+type) is appended to `FILE`, between a line saying what was connected and
+when, and a line saying when it ended. Escape sequences (colors, cursor
+moves) are kept, so `cat` or `less -R` shows the log much as it looked.
+Telnet negotiation is not logged.
+
+- If `FILE` is a folder, the log is named `HOST-YYYYMMDD-HHMMSS.log` in it.
+- As in PuTTY, `&H` (host, or the device name for serial), `&P` (port),
+  `&Y`, `&M`, `&D` (date) and `&T` (time, `HHMMSS`) in the name are filled
+  in; `&&` is a `&`.
+- New files are readable only by you (mode 600). The log can contain
+  anything shown on screen; passwords you type are usually not echoed
+  and so are not logged, but Telnet servers may echo what you type.
+
+```bash
+vortexssh connect user@host --log session.log
+vortexssh serial /dev/ttyUSB0 -b 115200 --log ~/logs              # ~/logs/ttyUSB0-20261024-101500.log
+vortexssh telnet switch.lan --log '~/logs/&H-&Y&M&D.log'          # one file per switch per day
+```
 
 ### `serial` — open a serial (COM) port
 
@@ -379,6 +403,10 @@ server makes old links invalid, and the page then asks for the new one.
   Files or Port forwards.
 - **Terminal**: `xterm.js`, resized with the window. Closed connections show a
   *Reconnect* button.
+- **Session logs**: tick *Save a log of the session output* in *New
+  connection*. The output goes to `~/.local/share/vortexssh/logs/`
+  (`HOST-YYYYMMDD-HHMMSS.log`, mode 600); the tab shows *Logging*, with the
+  file's path when you hover over it.
 - **Files**: browse, upload (button or drag and drop), download, rename,
   delete, new folder. Transfers stream over the same SSH connection.
 - **Port forwards**: add `-L`/`-R`/`-D` forwards (same syntax as the CLI) and
@@ -497,6 +525,13 @@ The engine every front-end uses. No UI/rendering code lives here.
 - `Filter::{ Raw, Telnet }` — `receive(input, &mut data, &mut reply)`, `encode(typed)`, `resize(cols, rows)`, `brk()`
 - `telnet::Telnet` — the RFC 854 state machine (ECHO, SGA, BINARY, NAWS, TERMINAL-TYPE; everything else refused)
 - `net::connect(host, port, service) -> TcpStream` — with readable errors (shared with SSH)
+
+### `session_log` — session logs
+
+- `SessionLog::create(path, label, host, port)` — append to `path` (a folder gets a dated name; PuTTY's `&H &P &Y &M &D &T` are filled in), mode 600, with a header line
+- `SessionLog::create_default(label, host, port)` — in `default_dir()` (`~/.local/share/vortexssh/logs`)
+- `write(bytes)`, `path()`, `take_error()` (a failed write is reported once; logging then stops, the session goes on); the end line is written on drop
+- `expand_name(template, host, port, time)`
 
 ### `ssh` — transport & sessions
 
