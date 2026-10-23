@@ -20,8 +20,8 @@
 
 ## Install
 
-- **Arch / CachyOS**: build the package from [`packaging/aur/PKGBUILD`](packaging/aur/PKGBUILD)
-  with `makepkg -si`.
+- **Arch / CachyOS**: `cd packaging/aur && makepkg -si` builds the tagged release (clones over SSH,
+  so it needs your GitHub key while the repository is private).
 - **Debian / Ubuntu**: download the `.deb` from the
   [releases page](https://github.com/TuxoJlumoH/vortexssh/releases) and run `sudo apt install ./vortexssh_*.deb`.
 - **Any Linux**: unpack the release tarball and copy its `bin/` and `share/` into

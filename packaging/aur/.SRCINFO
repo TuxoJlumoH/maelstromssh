@@ -7,6 +7,7 @@ pkgbase = vortexssh
 	arch = aarch64
 	license = MIT OR Apache-2.0
 	makedepends = cargo
+	makedepends = git
 	depends = gcc-libs
 	depends = glibc
 	depends = hicolor-icon-theme
@@ -18,7 +19,7 @@ pkgbase = vortexssh
 	optdepends = libxi: GUI on X11
 	optdepends = openssh: ssh-agent for key-based login
 	options = !lto
-	source = vortexssh-0.2.0.tar.gz::https://github.com/TuxoJlumoH/vortexssh/archive/refs/tags/v0.2.0.tar.gz
+	source = vortexssh-0.2.0::git+ssh://git@github.com/TuxoJlumoH/vortexssh.git#tag=v0.2.0
 	sha256sums = SKIP
 
 pkgname = vortexssh

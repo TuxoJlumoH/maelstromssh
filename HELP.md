@@ -30,7 +30,9 @@ Install and packaging (see the `Makefile`):
 | `make dist` | `dist/vortexssh-<ver>-<arch>-linux.tar.gz` + `.sha256` |
 | `make deb` | `dist/vortexssh_<ver>-1_<arch>.deb` (needs `cargo install cargo-deb`) |
 
-`packaging/aur/PKGBUILD` builds an Arch package from a release tag.
+`packaging/aur/PKGBUILD` builds an Arch package from a release tag
+(`cd packaging/aur && makepkg -si`). The repository is private, so it clones
+the tag over SSH and needs your GitHub key; it is not suitable for the AUR.
 
 CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, clippy with
 `-D warnings` and the tests on every push to `main` and every pull request.
@@ -43,8 +45,8 @@ Releasing:
 1. Bump `version` in the root `Cargo.toml`, run `cargo build` to update
    `Cargo.lock`, and commit.
 2. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
-3. Update `pkgver` in `packaging/aur/PKGBUILD`, then run `updpkgsums` and
-   `makepkg --printsrcinfo > .SRCINFO` (and push to the AUR repo if published there).
+3. Update `pkgver` in `packaging/aur/PKGBUILD`, then run
+   `makepkg --printsrcinfo > .SRCINFO`.
 
 ---
 

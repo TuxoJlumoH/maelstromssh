@@ -17,10 +17,11 @@ optdepends=(
   'libxi: GUI on X11'
   'openssh: ssh-agent for key-based login'
 )
-makedepends=('cargo')
+makedepends=('cargo' 'git')
 options=('!lto')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-# Run `updpkgsums` after the v$pkgver tag is pushed.
+# The repository is private, so the tag is fetched with git over SSH (your
+# GitHub key or ssh-agent). Git verifies the content; no checksum needed.
+source=("$pkgname-$pkgver::git+ssh://git@github.com/TuxoJlumoH/vortexssh.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
 prepare() {
