@@ -257,7 +257,15 @@ class Tab {
     this.warnings.replaceChildren();
     this.warnings.hidden = true;
     this.conn = null;
-    this.cwd = null;
+    this.setCwd(null);
+    this.entries = [];
+    this.fileRows.replaceChildren();
+    this.filesMessage.textContent = "";
+    this.abortUploads();
+    this.transfers.replaceChildren();
+    const forwardError = $(".forward-error", this.forwardsPanel);
+    forwardError.textContent = "";
+    forwardError.hidden = true;
     this.setState("connecting", `Connecting to ${this.title}…`);
     this.refit();
 
@@ -281,7 +289,11 @@ class Tab {
       this.replies.clear();
       cancelQuestions(this);
       if (!this.view.classList.contains("closed")) {
-        this.closed("Lost the connection to vortexssh-web. Is it still running?");
+        // Whatever answers on this port now may not be the server that
+        // started this page (and a restarted one has a new token), so
+        // offer no Reconnect that would send it a login.
+        this.closed("Lost the connection to vortexssh-web. Start it again and open the new link it prints.",
+          { serverLost: true });
       }
     };
   }
@@ -373,15 +385,16 @@ class Tab {
     return null;
   }
 
-  closed(reason) {
+  closed(reason, { serverLost = false } = {}) {
     this.conn = null;
+    this.abortUploads();
     this.setState("closed", reason);
     this.renderForwards([]); // the server stops them with the connection
     cancelQuestions(this);
     $(".closed-banner", this.view)?.remove();
     const banner = el("div", { class: "closed-banner" },
       el("span", { class: "text", text: reason }),
-      el("button", { class: "primary", onclick: () => this.reconnect() }, "Reconnect"),
+      serverLost ? null : el("button", { class: "primary", onclick: () => this.reconnect() }, "Reconnect"),
       el("button", { onclick: () => this.close() }, "Close tab"));
     $(".terminal-wrap", this.view).append(banner);
     if (this.ws) this.ws.close();
@@ -394,6 +407,7 @@ class Tab {
 
   close() {
     cancelQuestions(this);
+    this.abortUploads();
     const ws = this.ws;
     this.ws = null;
     if (ws) ws.close();
@@ -427,6 +441,10 @@ class Tab {
     this.fileRows = $("tbody", panel);
     this.filesMessage = $(".files-message", panel);
     this.transfers = $(".transfers", panel);
+    this.uploads = new Set();
+    this.entries = [];
+    this.listing = 0;
+    this.folderButtons = [$(".mkdir", panel), $(".upload", panel), $(".refresh", panel), $(".up", panel)];
     $(".path-bar", panel).addEventListener("submit", (e) => {
       e.preventDefault();
       this.listFiles(this.pathInput.value.trim());
@@ -461,26 +479,37 @@ class Tab {
         if (file) files.push(file);
       }
       if (folders) this.filesMessage.textContent = "Folders can't be uploaded; drop the files inside them instead.";
-      this.uploadFiles(files);
+      if (this.cwd !== null) this.uploadFiles(files);
     });
+  }
+
+  /// The folder shown; actions that need one are disabled without it.
+  setCwd(path) {
+    this.cwd = path;
+    for (const b of this.folderButtons) b.disabled = path === null;
   }
 
   async listFiles(path) {
     if (!this.conn) return;
+    // Only the latest listing counts, if replies arrive out of order.
+    const listing = ++this.listing;
     this.filesMessage.textContent = "Loading…";
     try {
       const result = await this.request({ type: "sftp", op: "list", path });
-      this.cwd = result.path;
+      if (listing !== this.listing) return;
+      this.setCwd(result.path);
       this.pathInput.value = result.path;
       this.renderFiles(result.entries);
       this.filesMessage.textContent = result.entries.length ? "" : "This folder is empty.";
     } catch (e) {
+      if (listing !== this.listing) return;
       this.filesMessage.textContent = e.message;
       this.pathInput.value = this.cwd ?? path;
     }
   }
 
   renderFiles(entries) {
+    this.entries = entries;
     entries.sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
     const rows = entries.map((entry) => {
       const path = joinPath(this.cwd, entry.name);
@@ -516,9 +545,13 @@ class Tab {
 
   async uploadFiles(files) {
     const dir = this.cwd;
+    if (dir === null) return;
     for (const file of files) {
-      const existing = [...this.fileRows.querySelectorAll(".name button")]
-        .some((b) => b.textContent.replace(/^\S+ /, "").replace(/ →$/, "") === file.name);
+      const existing = this.entries.find((e) => e.name === file.name);
+      if (existing?.dir) {
+        this.transfers.append(this.failedRow(`${file.name}: there is a folder with this name in ${dir}`));
+        continue;
+      }
       if (existing) {
         const ok = await ask({ owner: this, title: "Replace file?",
           message: `${file.name} already exists in ${dir}. Replace it?`, ok: "Replace", danger: true });
@@ -529,6 +562,17 @@ class Tab {
     if (this.cwd === dir) this.listFiles(dir);
   }
 
+  failedRow(message) {
+    const row = el("div", { class: "transfer failed" }, el("span", { text: message }));
+    row.append(el("button", { class: "icon", "aria-label": "Dismiss", onclick: () => row.remove() }, "×"));
+    return row;
+  }
+
+  abortUploads() {
+    for (const xhr of this.uploads) xhr.abort();
+    this.uploads.clear();
+  }
+
   upload(file, path) {
     const progress = el("progress", { max: "100", value: "0" });
     const label = el("span", { text: `Uploading ${file.name} (${formatSize(file.size)})` });
@@ -536,6 +580,8 @@ class Tab {
     this.transfers.append(row);
     return new Promise((resolve) => {
       const xhr = new XMLHttpRequest();
+      this.uploads.add(xhr);
+      xhr.onloadend = () => this.uploads.delete(xhr);
       xhr.open("PUT", `/api/conn/${this.conn}/upload?path=${encodeURIComponent(path)}`);
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) progress.value = (100 * e.loaded) / e.total;
@@ -556,11 +602,13 @@ class Tab {
         }
       };
       xhr.onerror = () => fail("upload failed");
+      xhr.onabort = () => fail("cancelled");
       xhr.send(file);
     });
   }
 
   async makeDir() {
+    if (this.cwd === null) return;
     const values = await ask({ owner: this, title: "New folder", message: `In ${this.cwd}`,
       fields: [{ label: "Name" }], ok: "Create" });
     const name = values && values[0].trim();
@@ -569,6 +617,7 @@ class Tab {
   }
 
   async rename(oldName) {
+    if (this.cwd === null) return;
     const values = await ask({ owner: this, title: "Rename", fields: [{ label: "New name", value: oldName }],
       ok: "Rename" });
     const name = values && values[0].trim();
