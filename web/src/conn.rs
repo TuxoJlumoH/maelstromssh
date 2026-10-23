@@ -25,6 +25,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, OnceCell};
+use tokio_util::sync::CancellationToken;
 use vortexssh_core::config::{forward_spec, parse_forward, ForwardKind, ForwardRule};
 use vortexssh_core::prompt::{KiPrompt, Prompter};
 use vortexssh_core::sftp::{self, SftpSession};
@@ -133,6 +134,9 @@ type TermTx = mpsc::Sender<Vec<u8>>;
 /// How many terminal frames may wait for the browser before the shell stops
 /// reading from the server. Frames are at most one SSH packet (~32 KiB).
 const TERM_QUEUE: usize = 64;
+
+/// How long closing a connection may take before it is abandoned.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a login prompt waits for an answer before giving up.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -303,6 +307,7 @@ async fn run(app: Arc<App>, socket: WebSocket) {
     let (input_tx, input_rx) = mpsc::unbounded_channel::<Input>();
     let mut input_rx = Some(input_rx);
     let mut session_task = None;
+    let cancel = CancellationToken::new();
 
     while let Some(Ok(msg)) = stream.next().await {
         let text = match msg {
@@ -355,13 +360,17 @@ async fn run(app: Arc<App>, socket: WebSocket) {
                     pending: pending.clone(),
                     next: AtomicU64::new(1),
                 });
+                let tab = Tab {
+                    term,
+                    input,
+                    cancel: cancel.clone(),
+                };
                 session_task = Some(tokio::spawn(run_session(
                     app.clone(),
                     args,
                     (cols, rows),
                     prompter,
-                    term,
-                    input,
+                    tab,
                     conn.clone(),
                 )));
             }
@@ -421,12 +430,18 @@ async fn run(app: Arc<App>, socket: WebSocket) {
         }
     }
 
-    // The tab is gone: cancel any open prompt and end the shell; the
-    // session task then stops the forwards and disconnects.
+    // The tab is gone: cancel any open prompt and end the session, which
+    // then stops the forwards and disconnects.
     lock(&pending).take();
     drop(input_tx);
+    cancel.cancel();
     if let Some(task) = session_task {
-        let _ = task.await;
+        if tokio::time::timeout(SHUTDOWN_TIMEOUT * 2, task)
+            .await
+            .is_err()
+        {
+            tracing::warn!("a session did not shut down in time");
+        }
     }
     writer.abort();
 }
@@ -475,16 +490,28 @@ async fn sftp_op(conn: &Conn, op: SftpOp) -> vortexssh_core::Result<Value> {
     })
 }
 
+/// The browser tab's side of a session: where terminal output goes, where
+/// keyboard input comes from, and the signal that the tab has closed.
+struct Tab {
+    term: TermTx,
+    input: mpsc::UnboundedReceiver<Input>,
+    cancel: CancellationToken,
+}
+
 /// Connects, runs the shell until it exits or the tab closes, then cleans up.
 async fn run_session(
     app: Arc<App>,
     args: TargetArgs,
     (cols, rows): (u32, u32),
     prompter: Arc<WebPrompter>,
-    term: TermTx,
-    mut input: mpsc::UnboundedReceiver<Input>,
+    tab: Tab,
     slot: Arc<OnceLock<Arc<Conn>>>,
 ) {
+    let Tab {
+        term,
+        mut input,
+        cancel,
+    } = tab;
     let out = prompter.out.clone();
     let closed = |reason: String| send(&out, json!({ "type": "closed", "reason": reason }));
 
@@ -496,25 +523,33 @@ async fn run_session(
     for warning in &target.warnings {
         send(&out, json!({ "type": "warning", "message": warning }));
     }
-    let connected = Session::connect(
-        &target.host,
-        target.port,
-        &target.user,
-        &target.auth,
-        prompter.clone(),
-        Arc::new(KnownHosts {
-            prompter: prompter.clone(),
-        }),
-    )
-    .await;
+    // A server that stalls the handshake would otherwise keep this task
+    // (and the tab's resources) forever, even after the tab is closed.
+    let connected = tokio::select! {
+        r = Session::connect(
+            &target.host,
+            target.port,
+            &target.user,
+            &target.auth,
+            prompter.clone(),
+            Arc::new(KnownHosts {
+                prompter: prompter.clone(),
+            }),
+        ) => r,
+        _ = cancel.cancelled() => return,
+    };
     let mut session = match connected {
         Ok(s) => s,
         Err(e) => return closed(e.to_string()),
     };
-    let mut channel = match session.open_shell(TERM_TYPE, cols, rows).await {
+    let shell = tokio::select! {
+        r = session.open_shell(TERM_TYPE, cols, rows) => r,
+        _ = cancel.cancelled() => Err(vortexssh_core::Error::Other("closed".into())),
+    };
+    let channel = match shell {
         Ok(c) => c,
         Err(e) => {
-            let _ = session.disconnect().await;
+            let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, session.disconnect()).await;
             return closed(format!("opening a shell: {e}"));
         }
     };
@@ -542,12 +577,37 @@ async fn run_session(
                 "forwards": conn.forward_list().await }),
     );
 
+    // Keyboard input gets its own task: writing can wait on the server (a
+    // full SSH window, or russh's queue while this side is not reading
+    // output), and it must never stop the loop below from reading, or the
+    // two would wait on each other forever.
+    let (mut reader, writer) = channel.split();
+    let mut typing = tokio::spawn(async move {
+        while let Some(cmd) = input.recv().await {
+            match cmd {
+                Input::Data(bytes) => {
+                    if writer.data(&bytes[..]).await.is_err() {
+                        return false;
+                    }
+                }
+                Input::Resize { cols, rows } => {
+                    let _ = writer.window_change(cols, rows, 0, 0).await;
+                }
+            }
+        }
+        true // the tab closed
+    });
+
     let mut exit_status = None;
     let reason = loop {
         tokio::select! {
-            // Only read more output while the browser keeps up; input (e.g.
-            // Ctrl-C) is still handled while waiting.
-            msg = channel.wait(), if term.capacity() > 0 => match msg {
+            _ = cancel.cancelled() => break "closed".to_string(),
+            done = &mut typing => break match done {
+                Ok(true) => "closed".to_string(),
+                _ => "The connection was lost.".to_string(),
+            },
+            // Only read more output while the browser keeps up.
+            msg = reader.wait(), if term.capacity() > 0 => match msg {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
                     if term.try_send(data.to_vec()).is_err() {
                         break "closed".to_string();
@@ -565,22 +625,22 @@ async fn run_session(
                     break "closed".to_string();
                 }
             }
-            cmd = input.recv() => match cmd {
-                Some(Input::Data(bytes)) => {
-                    if channel.data(&bytes[..]).await.is_err() {
-                        break "The connection was lost.".to_string();
-                    }
-                }
-                Some(Input::Resize { cols, rows }) => {
-                    let _ = channel.window_change(cols, rows, 0, 0).await;
-                }
-                None => break "closed".to_string(),
-            },
         }
     };
+    typing.abort();
+    // Dropping the reader unblocks russh if it waits to hand us output.
+    drop(reader);
 
     lock(&app.conns).remove(&id);
-    conn.stop_all_forwards().await;
-    let _ = conn.session.disconnect().await;
+    let cleanup = async {
+        conn.stop_all_forwards().await;
+        let _ = conn.session.disconnect().await;
+    };
+    if tokio::time::timeout(SHUTDOWN_TIMEOUT, cleanup)
+        .await
+        .is_err()
+    {
+        tracing::warn!("disconnecting timed out");
+    }
     closed(reason);
 }
