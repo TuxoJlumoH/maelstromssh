@@ -172,17 +172,17 @@ const FORWARD_HELP = {
 };
 
 class Tab {
-  /// `request`: what to send in `connect` ({target, port, identity} or {profile}).
-  constructor(title, request) {
+  /// `target`: what to send in `connect` ({target, port, identity} or {profile}).
+  constructor(title, target) {
     this.title = title;
-    this.request = request;
+    this.target = target;
     this.conn = null;
     this.ws = null;
     this.nextId = 1;
     this.replies = new Map();
     this.cwd = null;
 
-    this.button = el("div", { class: "tab", role: "tab", tabindex: "0", onclick: () => select(this) },
+    this.button = el("div", { class: "tab", role: "tab", tabindex: "0", title, onclick: () => select(this) },
       el("span", { class: "label", text: title }),
       el("button", { class: "close", title: "Close", "aria-label": "Close tab",
         onclick: (e) => { e.stopPropagation(); this.close(); } }, "×"));
@@ -212,7 +212,9 @@ class Tab {
     this.term.onData((data) => this.sendBytes(encoder.encode(data)));
     this.term.onBinary((data) => this.sendBytes(Uint8Array.from(data, (c) => c.charCodeAt(0) & 0xff)));
     this.term.onResize(({ cols, rows }) => this.sendJson({ type: "resize", cols, rows }));
-    this.term.onTitleChange((t) => { if (t) $(".label", this.button).textContent = t; });
+    // The tab keeps the host name, so tabs stay distinguishable; the
+    // shell's window title goes into the tooltip.
+    this.term.onTitleChange((t) => { this.button.title = t ? `${title} — ${t}` : title; });
     this.resizer = new ResizeObserver(() => this.refit());
     this.resizer.observe($(".terminal-wrap", this.view));
 
@@ -260,7 +262,7 @@ class Tab {
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {
-      this.sendJson({ type: "connect", ...this.request, cols: this.term.cols, rows: this.term.rows });
+      this.sendJson({ type: "connect", ...this.target, cols: this.term.cols, rows: this.term.rows });
     };
     ws.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
@@ -369,6 +371,7 @@ class Tab {
   closed(reason) {
     this.conn = null;
     this.setState("closed", reason);
+    this.renderForwards([]); // the server stops them with the connection
     cancelQuestions(this);
     $(".closed-banner", this.view)?.remove();
     const banner = el("div", { class: "closed-banner" },
