@@ -615,6 +615,7 @@ async fn run_session(
                 }
                 Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
                 Some(ChannelMsg::Close) | None => break match exit_status {
+                    None if conn.session.is_closed() => "The connection was lost.".to_string(),
                     Some(0) | None => "The remote shell exited.".to_string(),
                     Some(code) => format!("The remote shell exited with status {code}."),
                 },

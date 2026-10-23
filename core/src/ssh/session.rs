@@ -74,7 +74,11 @@ impl Session {
         prompter: Arc<dyn Prompter>,
         verifier: Arc<dyn HostKeyVerifier>,
     ) -> Result<Self> {
-        let config = Arc::new(client::Config::default());
+        let config = Arc::new(client::Config {
+            keepalive_interval: Some(KEEPALIVE_INTERVAL),
+            keepalive_max: KEEPALIVE_MAX,
+            ..Default::default()
+        });
         let (tx, rx) = mpsc::unbounded_channel();
         let rejection = Arc::new(std::sync::Mutex::new(None));
         let handler = ClientHandler {
@@ -190,6 +194,12 @@ impl Session {
 
 /// How long to wait for the TCP connection before giving up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A keepalive goes out after this long without hearing from the server...
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+/// ...and the connection counts as lost after this many go unanswered, so a
+/// dead network link is noticed in about 2 minutes instead of never.
+const KEEPALIVE_MAX: usize = 3;
 
 /// Opens the TCP connection, turning the usual failures into messages that
 /// say what went wrong.
