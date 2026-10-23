@@ -41,7 +41,9 @@ pub struct Conn {
     pub session: Session,
     sftp: OnceCell<SftpSession>,
     forwarder: Forwarder,
-    forwards: tokio::sync::Mutex<Vec<RunningForward>>,
+    /// `None` once the connection is closing, so a forward that finishes
+    /// starting after that is stopped instead of kept.
+    forwards: tokio::sync::Mutex<Option<Vec<RunningForward>>>,
     next_forward: AtomicU64,
 }
 
@@ -62,7 +64,15 @@ impl Conn {
 
     async fn add_forward(&self, rule: &ForwardRule) -> vortexssh_core::Result<()> {
         let active = self.forwarder.start(rule).await?;
-        self.forwards.lock().await.push(RunningForward {
+        let mut forwards = self.forwards.lock().await;
+        let Some(list) = forwards.as_mut() else {
+            drop(forwards);
+            let _ = active.stop().await;
+            return Err(vortexssh_core::Error::Other(
+                "the connection is closed".into(),
+            ));
+        };
+        list.push(RunningForward {
             id: self.next_forward.fetch_add(1, Ordering::Relaxed),
             kind: rule.kind,
             spec: forward_spec(rule),
@@ -73,9 +83,9 @@ impl Conn {
 
     async fn stop_forward(&self, id: u64) -> vortexssh_core::Result<()> {
         let running = {
-            let mut list = self.forwards.lock().await;
-            let index = list.iter().position(|f| f.id == id);
-            index.map(|i| list.remove(i))
+            let mut forwards = self.forwards.lock().await;
+            let list = forwards.as_mut();
+            list.and_then(|l| l.iter().position(|f| f.id == id).map(|i| l.remove(i)))
         };
         match running {
             Some(f) => f.active.stop().await,
@@ -84,16 +94,18 @@ impl Conn {
     }
 
     async fn stop_all_forwards(&self) {
-        let list = std::mem::take(&mut *self.forwards.lock().await);
+        let list = self.forwards.lock().await.take().unwrap_or_default();
         for f in list {
             let _ = f.active.stop().await;
         }
     }
 
     async fn forward_list(&self) -> Value {
-        let list = self.forwards.lock().await;
+        let forwards = self.forwards.lock().await;
         Value::Array(
-            list.iter()
+            forwards
+                .iter()
+                .flatten()
                 .map(|f| {
                     let (listen, dest) = match &f.active.info {
                         ForwardInfo::Local { local, dest } => (local.to_string(), dest.clone()),
@@ -501,7 +513,7 @@ async fn run_session(
         session,
         sftp: OnceCell::new(),
         forwarder,
-        forwards: Default::default(),
+        forwards: tokio::sync::Mutex::new(Some(Vec::new())),
         next_forward: AtomicU64::new(1),
     });
     let id = app.next_id.fetch_add(1, Ordering::Relaxed);
