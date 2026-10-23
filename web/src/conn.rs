@@ -6,8 +6,9 @@
 //! - browser → server: `connect`, `answer` (to a login prompt), `resize`,
 //!   `sftp` and `forward_add` / `forward_stop` requests (each with an `id`
 //!   that the `reply` echoes);
-//! - server → browser: `ask` (a login prompt), `warning`, `ready`,
-//!   `reply`, `forwards` (the current list) and `closed`.
+//! - server → browser: `ask` (a login prompt) and `ask_cancel` (it timed
+//!   out), `warning`, `ready`, `reply`, `forwards` (the current list) and
+//!   `closed`.
 //!
 //! Downloads and uploads are plain HTTP requests (see `api`) that find the
 //! connection by the id sent in `ready`.
@@ -15,6 +16,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -108,16 +110,23 @@ impl Conn {
     }
 }
 
-/// A frame for the browser.
-enum Out {
-    Json(Value),
-    Bytes(Vec<u8>),
-}
+/// JSON messages for the browser. Terminal output goes through a separate
+/// bounded queue (`TermTx`) so a slow browser slows the shell down instead
+/// of filling memory.
+type OutTx = mpsc::UnboundedSender<Value>;
 
-type OutTx = mpsc::UnboundedSender<Out>;
+/// Terminal output frames waiting for the browser.
+type TermTx = mpsc::Sender<Vec<u8>>;
+
+/// How many terminal frames may wait for the browser before the shell stops
+/// reading from the server. Frames are at most one SSH packet (~32 KiB).
+const TERM_QUEUE: usize = 64;
+
+/// How long a login prompt waits for an answer before giving up.
+const PROMPT_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn send(out: &OutTx, value: Value) {
-    let _ = out.send(Out::Json(value));
+    let _ = out.send(value);
 }
 
 /// Input for the shell.
@@ -199,8 +208,14 @@ impl WebPrompter {
         lock(&self.pending).as_mut()?.insert(id, tx);
         question["type"] = "ask".into();
         question["id"] = id.into();
-        let answer = if self.out.send(Out::Json(question)).is_ok() {
-            rx.recv().ok()
+        // Prompts block a thread, so they give up after a while rather than
+        // holding it for as long as the dialog stays open.
+        let answer = if self.out.send(question).is_ok() {
+            let answer = rx.recv_timeout(PROMPT_TIMEOUT).ok();
+            if answer.is_none() {
+                send(&self.out, json!({ "type": "ask_cancel", "id": id }));
+            }
+            answer
         } else {
             None
         };
@@ -252,12 +267,16 @@ pub async fn ws(State(app): State<Arc<App>>, upgrade: WebSocketUpgrade) -> Respo
 
 async fn run(app: Arc<App>, socket: WebSocket) {
     let (mut sink, mut stream) = socket.split();
-    let (out, mut out_rx) = mpsc::unbounded_channel::<Out>();
+    let (out, mut out_rx) = mpsc::unbounded_channel::<Value>();
+    let (term_tx, mut term_rx) = mpsc::channel::<Vec<u8>>(TERM_QUEUE);
     let writer = tokio::spawn(async move {
-        while let Some(frame) = out_rx.recv().await {
-            let msg = match frame {
-                Out::Json(v) => Message::Text(v.to_string().into()),
-                Out::Bytes(b) => Message::Binary(b.into()),
+        loop {
+            // JSON first, so prompts and replies are not stuck behind output.
+            let msg = tokio::select! {
+                biased;
+                Some(v) = out_rx.recv() => Message::Text(v.to_string().into()),
+                Some(b) = term_rx.recv() => Message::Binary(b.into()),
+                else => break,
             };
             if sink.send(msg).await.is_err() {
                 break;
@@ -265,6 +284,7 @@ async fn run(app: Arc<App>, socket: WebSocket) {
         }
         let _ = sink.close().await;
     });
+    let mut term_tx = Some(term_tx);
 
     let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
     let conn: Arc<OnceLock<Arc<Conn>>> = Arc::default();
@@ -298,7 +318,7 @@ async fn run(app: Arc<App>, socket: WebSocket) {
                 cols,
                 rows,
             } => {
-                let Some(input) = input_rx.take() else {
+                let (Some(input), Some(term)) = (input_rx.take(), term_tx.take()) else {
                     continue; // already connecting
                 };
                 let args = TargetArgs {
@@ -318,6 +338,7 @@ async fn run(app: Arc<App>, socket: WebSocket) {
                     args,
                     (cols, rows),
                     prompter,
+                    term,
                     input,
                     conn.clone(),
                 )));
@@ -438,6 +459,7 @@ async fn run_session(
     args: TargetArgs,
     (cols, rows): (u32, u32),
     prompter: Arc<WebPrompter>,
+    term: TermTx,
     mut input: mpsc::UnboundedReceiver<Input>,
     slot: Arc<OnceLock<Arc<Conn>>>,
 ) {
@@ -501,9 +523,13 @@ async fn run_session(
     let mut exit_status = None;
     let reason = loop {
         tokio::select! {
-            msg = channel.wait() => match msg {
+            // Only read more output while the browser keeps up; input (e.g.
+            // Ctrl-C) is still handled while waiting.
+            msg = channel.wait(), if term.capacity() > 0 => match msg {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    let _ = out.send(Out::Bytes(data.to_vec()));
+                    if term.try_send(data.to_vec()).is_err() {
+                        break "closed".to_string();
+                    }
                 }
                 Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
                 Some(ChannelMsg::Close) | None => break match exit_status {
@@ -512,6 +538,11 @@ async fn run_session(
                 },
                 _ => {}
             },
+            space = term.reserve(), if term.capacity() == 0 => {
+                if space.is_err() {
+                    break "closed".to_string();
+                }
+            }
             cmd = input.recv() => match cmd {
                 Some(Input::Data(bytes)) => {
                     if channel.data(&bytes[..]).await.is_err() {

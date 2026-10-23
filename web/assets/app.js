@@ -134,12 +134,13 @@ askDialog.addEventListener("close", () => {
   nextQuestion();
 });
 
-/// Drops the questions of a closed tab.
-function cancelQuestions(owner) {
+/// Drops the questions of a closed tab, or only the one with `serverId`.
+function cancelQuestions(owner, serverId) {
+  const matches = (spec) => spec.owner === owner && (serverId === undefined || spec.serverId === serverId);
   for (let i = askQueue.length - 1; i >= 0; i--) {
-    if (askQueue[i].spec.owner === owner) askQueue.splice(i, 1)[0].resolve(null);
+    if (matches(askQueue[i].spec)) askQueue.splice(i, 1)[0].resolve(null);
   }
-  if (asking && asking.spec.owner === owner) askDialog.close("cancel");
+  if (asking && matches(asking.spec)) askDialog.close("cancel");
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +307,9 @@ class Tab {
       case "ask":
         this.sendJson({ type: "answer", id: msg.id, value: await this.answer(msg) });
         break;
+      case "ask_cancel":
+        cancelQuestions(this, msg.id);
+        break;
       case "warning":
         this.warnings.append(el("div", { text: `⚠ ${msg.message}` }));
         this.warnings.hidden = false;
@@ -336,13 +340,14 @@ class Tab {
   /// Turns a server question into a dialog; returns the answer to send.
   async answer(q) {
     if (q.kind === "secret") {
-      const values = await ask({ owner: this, title: this.title, message: q.prompt,
+      const values = await ask({ owner: this, serverId: q.id, title: this.title, message: q.prompt,
         fields: [{ label: "", secret: true }], ok: "Continue" });
       return values ? values[0] : null;
     }
     if (q.kind === "host_key") {
       const answer = await ask({
         owner: this,
+        serverId: q.id,
         title: "Unknown host key",
         message: `The authenticity of ${q.host}:${q.port} can't be established. ` +
           "Check that this fingerprint matches the server before trusting it. " +
@@ -355,7 +360,7 @@ class Tab {
     if (q.kind === "keyboard_interactive") {
       const message = [q.name, q.instructions].filter(Boolean).join("\n");
       if (q.prompts.length === 0) return [];
-      return ask({ owner: this, title: this.title, message: message || "The server asks:",
+      return ask({ owner: this, serverId: q.id, title: this.title, message: message || "The server asks:",
         fields: q.prompts.map((p) => ({ label: p.text, secret: !p.echo })), ok: "Continue" });
     }
     return null;
