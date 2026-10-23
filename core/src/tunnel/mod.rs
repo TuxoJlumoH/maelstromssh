@@ -131,9 +131,10 @@ impl Forwarder {
                 let map = self.remote.clone().ok_or_else(|| {
                     Error::Other("remote forwarding is not available on this session".into())
                 })?;
+                let bind_host = remote_bind_host(&rule.bind_host).to_string();
                 let bound = self
                     .handle
-                    .tcpip_forward(&rule.bind_host, rule.bind_port)
+                    .tcpip_forward(&bind_host, rule.bind_port)
                     .await?;
                 let port = if rule.bind_port == 0 {
                     bound
@@ -147,7 +148,7 @@ impl Forwarder {
                     info: ForwardInfo::Remote { port, dest },
                     stop: Stop::Remote {
                         handle: self.handle.clone(),
-                        bind_host: rule.bind_host.clone(),
+                        bind_host,
                         port,
                         map,
                     },
@@ -251,6 +252,17 @@ async fn bind(bind_host: &str, bind_port: u16) -> Result<TcpListener> {
 fn local_bind_host(bind_host: &str) -> &str {
     if bind_host.is_empty() {
         "127.0.0.1"
+    } else {
+        bind_host
+    }
+}
+
+/// A remote forward with no bind address asks for loopback, as OpenSSH
+/// does: an empty address means "all interfaces" (RFC 4254), which a server
+/// with `GatewayPorts clientspecified` would expose to the network.
+fn remote_bind_host(bind_host: &str) -> &str {
+    if bind_host.is_empty() {
+        "localhost"
     } else {
         bind_host
     }
@@ -412,6 +424,13 @@ pub fn parse_socks_addr(buf: &[u8]) -> Option<(String, u16, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_bind_addresses_stay_on_loopback() {
+        assert_eq!(local_bind_host(""), "127.0.0.1");
+        assert_eq!(remote_bind_host(""), "localhost");
+        assert_eq!(remote_bind_host("0.0.0.0"), "0.0.0.0");
+    }
 
     #[test]
     fn parses_ipv4_address() {
