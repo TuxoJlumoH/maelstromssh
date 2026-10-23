@@ -140,6 +140,45 @@ vortexssh connect -D 1080 user@example.com                     # SOCKS5 proxy
 vortexssh connect -L 127.0.0.1:8080:localhost:80 user@host     # bind a specific local addr
 ```
 
+With a serial profile, `connect --profile NAME` opens its serial port
+instead (see `serial` below); port forwards are refused there.
+
+### `serial` — open a serial (COM) port
+
+```
+vortexssh serial <DEVICE> [OPTIONS]
+vortexssh serial --list
+```
+
+| Argument / flag | Description |
+|---|---|
+| `DEVICE` | The port, e.g. `/dev/ttyUSB0` (USB adapters), `/dev/ttyACM0` (USB CDC, many dev boards), `/dev/ttyS0` (built-in). |
+| `-b, --baud <BAUD>` | Speed (default `9600`). |
+| `--data-bits <5-8>` | Default `8`. |
+| `--parity <none\|odd\|even>` | Default `none`. |
+| `--stop-bits <1\|2>` | Default `1`. |
+| `--flow <none\|software\|hardware>` | Flow control: XON/XOFF or RTS/CTS (default `none`). |
+| `-l, --list` | List this machine's serial ports and exit. |
+
+While connected, **Ctrl-]** is the escape key: **Ctrl-] q** quits,
+**Ctrl-] b** sends a break (e.g. to enter a router's ROM monitor), and
+**Ctrl-] Ctrl-]** sends a Ctrl-] to the device. The port is opened
+exclusively, so a second program can't open it at the same time.
+
+```bash
+vortexssh serial --list
+vortexssh serial /dev/ttyUSB0 -b 115200
+vortexssh serial /dev/ttyS0 -b 9600 --parity even --stop-bits 2 --flow hardware
+```
+
+"Permission denied" means you are not in the group that owns the device
+(`ls -l /dev/ttyUSB0`): `uucp` on Arch/CachyOS, `dialout` on Debian, Ubuntu
+and Fedora. Add yourself with `sudo usermod -aG uucp $USER`, then log out
+and back in. To try it without hardware, make a virtual cable with
+`socat -d -d pty,raw,echo=0 pty,raw,echo=0` and open one of the two
+`/dev/pts/N` devices it prints, e.g. with `vortexssh serial`, and the
+other one with a second program.
+
 ### `profile` — manage saved profiles
 
 ```
@@ -151,9 +190,12 @@ vortexssh profile rm <NAME>
 
 `add` options: `-u, --user <USER>`, `-p, --port <PORT>`, `--auth <AUTH>`,
 `-i, --identity <PATH>`, `-L`/`-R`/`-D` (forward specs, repeatable).
+With `--serial`, `TARGET` is a device and the line is set with the
+`serial` flags (`-b`, `--data-bits`, `--parity`, `--stop-bits`, `--flow`).
 
 ```bash
 vortexssh profile add mybox user@10.0.0.5 -p 2222 -i ~/.ssh/id_ed25519
+vortexssh profile add switch /dev/ttyUSB0 --serial -b 9600
 vortexssh profile list
 vortexssh profile show mybox
 vortexssh profile rm mybox
@@ -296,14 +338,18 @@ server makes old links invalid, and the page then asks for the new one.
   port and key file), a saved profile, or a `~/.ssh/config` alias from the
   sidebar. Each connection is a tab. Login prompts (passphrase, password,
   2FA, unknown host key) appear as dialogs.
+- **Serial ports**: choose *Serial* in *New connection* or in a profile.
+  The device field suggests the ports found on this machine; set speed,
+  data bits, parity, stop bits and flow control. Serial tabs have a
+  *Send break* button instead of Files and Port forwards.
 - **Terminal**: `xterm.js`, resized with the window. Closed connections show a
   *Reconnect* button.
 - **Files**: browse, upload (button or drag and drop), download, rename,
   delete, new folder. Transfers stream over the same SSH connection.
 - **Port forwards**: add `-L`/`-R`/`-D` forwards (same syntax as the CLI) and
   stop them while connected. A profile's forwards start on connect.
-- **Profiles**: `+` creates one, the ✎ button edits or deletes one. Forwards
-  are entered one per line, e.g. `-L 8080:localhost:80`.
+- **Profiles**: `+` creates one (SSH or serial), the ✎ button edits or
+  deletes one. Forwards are entered one per line, e.g. `-L 8080:localhost:80`.
 
 Security: every request must carry the token and name this server in `Host`
 (blocks DNS rebinding); WebSockets and changes must come from the app's
@@ -341,6 +387,19 @@ terminal = { term_type = "xterm-256color", scrollback_lines = 10000 }
 `public_key` (with `key_path`), `agent`, or `keyboard_interactive`. `auth`,
 `forwards` and `terminal` are optional; a missing `auth` means `auto`.
 
+A serial profile has `protocol = "serial"` and the device as `host`:
+
+```toml
+name = "switch"
+protocol = "serial"
+host = "/dev/ttyUSB0"
+serial = { baud = 9600, data_bits = 8, parity = "none", stop_bits = 1, flow_control = "none" }
+```
+
+`protocol` defaults to `"ssh"`. Every `serial` field is optional (9600 8N1,
+no flow control); `parity` is `none`, `odd` or `even`, `flow_control` is
+`none`, `software` (XON/XOFF) or `hardware` (RTS/CTS).
+
 ---
 
 ## 8. Core library (`vortexssh-core`) — functions
@@ -349,7 +408,8 @@ The engine every front-end uses. No UI/rendering code lives here.
 
 ### `config` — persisted profiles
 
-- `Profile { name, host, port, user, auth, forwards, terminal }`
+- `Profile { name, protocol, host, port, user, auth, forwards, serial, terminal }`; `Profile::new(name)` for defaults
+- `Protocol::{ Ssh, Serial }`; `SerialSettings { baud, data_bits, parity, stop_bits, flow_control }` (`check()`, displays as `9600 8N1`), `Parity`, `FlowControl`
 - `AuthMethod::{ Auto{identities}, Password, PublicKey{key_path}, Agent, KeyboardInteractive }` (default `Auto` with no identities)
 - `ForwardRule { kind, bind_host, bind_port, dest_host, dest_port }` / `ForwardKind::{ Local, Remote, Dynamic }`
 - `TerminalSettings { term_type, scrollback_lines, color_scheme }`
@@ -369,13 +429,21 @@ The engine every front-end uses. No UI/rendering code lives here.
 ### `target` / `prompt` — shared front-end plumbing
 
 - `TargetArgs { target, port, identity, profile, auth }` (`clap::Args` with the
-  `clap` feature) → `resolve() -> Target { host, port, user, auth, forwards, warnings }`
-  (`resolve_with(&ProfileStore, &SshConfig)` for explicit sources)
+  `clap` feature) → `resolve() -> Target { protocol, host, port, user, auth, forwards, serial, warnings }`
+  (`resolve_with(&ProfileStore, &SshConfig)` for explicit sources). These
+  refuse serial profiles; `resolve_any()` / `resolve_any_with()` accept them.
+  `Target::serial(device, settings)` builds a serial target.
 - `SshConfig` — `load_default()`, `from_file(path, base)`, `parse(text, base)`,
   `lookup(host, user) -> HostConfig { hostname, user, port, identity_files, unsupported }`,
   `host_aliases()`
 - `Prompter` trait — `secret`, `confirm_host_key`, `keyboard_interactive`;
   `TtyPrompter` (terminal, `tty` feature) and `NoPrompt`
+
+### `serial` — serial ports
+
+- `list_ports() -> Vec<PortInfo { path, description }>` (empty built-in `ttyS*` slots are skipped)
+- `open(path, &SerialSettings) -> SerialStream` (tokio `AsyncRead + AsyncWrite`, exclusive)
+- `Line::open(path, &settings) -> Line { reader, writer, breaker }`; `Breaker::send()` sends a break (blocks ~0.25 s)
 
 ### `ssh` — transport & sessions
 

@@ -15,7 +15,8 @@ use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::{ReaderStream, StreamReader};
 use vortexssh_core::config::{
-    check_profile_name, parse_forward, AuthMethod, ForwardKind, Profile, ProfileStore, SshConfig,
+    check_profile_name, parse_forward, AuthMethod, ForwardKind, Profile, ProfileStore, Protocol,
+    SerialSettings, SshConfig,
 };
 use vortexssh_core::sftp;
 use vortexssh_core::target::{local_user, split_target};
@@ -72,7 +73,27 @@ pub async fn hosts() -> ApiResult<Json<Value>> {
     .await
 }
 
+/// `GET /api/serial-ports`: the serial ports on this machine.
+pub async fn serial_ports() -> ApiResult<Json<Value>> {
+    blocking(|| {
+        let ports = vortexssh_core::serial::list_ports().map_err(server_error)?;
+        let list: Vec<Value> = ports
+            .into_iter()
+            .map(|p| json!({ "path": p.path, "description": p.description }))
+            .collect();
+        Ok(Json(Value::Array(list)))
+    })
+    .await
+}
+
 fn profile_json(p: &Profile) -> Value {
+    if p.protocol == Protocol::Serial {
+        let settings = p.serial.unwrap_or_default();
+        return json!({
+            "name": p.name, "protocol": "serial", "device": p.host,
+            "serial": settings, "line": settings.to_string(),
+        });
+    }
     let identity = match &p.auth {
         AuthMethod::Auto { identities } => identities.first().cloned(),
         AuthMethod::PublicKey { key_path } => Some(key_path.clone()),
@@ -91,7 +112,7 @@ fn profile_json(p: &Profile) -> Value {
         .map(|f| json!({ "kind": f.kind, "spec": vortexssh_core::config::forward_spec(f) }))
         .collect();
     json!({
-        "name": p.name, "host": p.host, "port": p.port, "user": p.user,
+        "name": p.name, "protocol": "ssh", "host": p.host, "port": p.port, "user": p.user,
         "auth": auth, "identity": identity, "forwards": forwards,
     })
 }
@@ -99,8 +120,11 @@ fn profile_json(p: &Profile) -> Value {
 #[derive(Deserialize)]
 pub struct ProfileForm {
     name: String,
-    /// `user@host` or `host`.
+    /// `user@host` or `host`; the device for serial.
     target: String,
+    /// Set for a serial profile.
+    #[serde(default)]
+    serial: Option<SerialSettings>,
     #[serde(default)]
     port: Option<u16>,
     #[serde(default)]
@@ -123,6 +147,9 @@ pub async fn save_profile(Json(form): Json<ProfileForm>) -> ApiResult<Json<Value
     blocking(move || {
         let name = form.name.trim().to_string();
         check_profile_name(&name).map_err(bad_request)?;
+        if let Some(settings) = form.serial {
+            return save_serial_profile(name, form.target.trim(), settings, form.original);
+        }
         let (user, host) = split_target(form.target.trim());
         if host.is_empty() {
             return Err(bad_request("enter a host"));
@@ -159,13 +186,13 @@ pub async fn save_profile(Json(form): Json<ProfileForm>) -> ApiResult<Json<Value
             )));
         }
         let profile = Profile {
-            name: name.clone(),
             host,
             port: form.port.unwrap_or(22),
             user: user.unwrap_or_else(local_user),
             auth,
             forwards,
             terminal: existing.map(|p| p.terminal).unwrap_or_default(),
+            ..Profile::new(name.clone())
         };
         store.save(&profile).map_err(server_error)?;
         if let Some(original) = form.original.filter(|o| *o != name) {
@@ -174,6 +201,37 @@ pub async fn save_profile(Json(form): Json<ProfileForm>) -> ApiResult<Json<Value
         Ok(Json(profile_json(&profile)))
     })
     .await
+}
+
+fn save_serial_profile(
+    name: String,
+    device: &str,
+    settings: SerialSettings,
+    original: Option<String>,
+) -> ApiResult<Json<Value>> {
+    if device.is_empty() {
+        return Err(bad_request("enter a serial device, e.g. /dev/ttyUSB0"));
+    }
+    settings.check().map_err(bad_request)?;
+    let store = store()?;
+    if original.as_deref() != Some(name.as_str()) && store.load(&name).is_ok() {
+        return Err(bad_request(format!(
+            "a profile named '{name}' already exists"
+        )));
+    }
+    let existing = store.load(original.as_deref().unwrap_or(&name)).ok();
+    let profile = Profile {
+        protocol: Protocol::Serial,
+        host: device.to_string(),
+        serial: Some(settings),
+        terminal: existing.map(|p| p.terminal).unwrap_or_default(),
+        ..Profile::new(name.clone())
+    };
+    store.save(&profile).map_err(server_error)?;
+    if let Some(original) = original.filter(|o| *o != name) {
+        let _ = store.delete(&original);
+    }
+    Ok(Json(profile_json(&profile)))
 }
 
 /// `DELETE /api/profiles/{name}`.

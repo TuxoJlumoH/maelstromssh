@@ -5,7 +5,7 @@
 <h1 align="center">VortexSSH</h1>
 
 <p align="center">
-  An SSH/SFTP client for Linux, written in Rust — use it from the command line, a full-screen
+  An SSH/SFTP and serial console client for Linux, written in Rust — use it from the command line, a full-screen
   terminal UI, a desktop window or your web browser, all driven by one shared engine.
 </p>
 
@@ -14,6 +14,7 @@
 - **SSH** — works like OpenSSH out of the box: `ssh-agent`, `~/.ssh` keys, password and keyboard-interactive (2FA), `~/.ssh/config` host aliases, and trust-on-first-use host-key verification.
 - **SFTP** — scriptable `get`/`put`/`ls`/`rm`/`mkdir`/`rename`, an interactive shell, and a drag-and-drop file browser in the web UI.
 - **Port forwarding** — local, remote, and dynamic (SOCKS5 proxy); the web UI adds and stops forwards while connected.
+- **Serial / COM ports** — open `/dev/ttyUSB0`, `/dev/ttyACM0`, `/dev/ttyS0` etc. with any baud rate, data bits, parity, stop bits and flow control, and send a break; in the CLI and the web UI.
 - **Key generation** — Ed25519 and RSA (configurable size).
 - **Full terminal emulator** — 256-color + truecolor, scrollback, reflow-on-resize, scroll regions, alternate screen, mouse reporting, bracketed paste.
 - **Profiles** — saved connection settings, including port forwards.
@@ -22,7 +23,7 @@
 
 | Binary | What it is |
 |---|---|
-| `vortexssh` | Command line — connect, `sftp`, `profile`, `keygen` |
+| `vortexssh` | Command line — connect, `serial`, `sftp`, `profile`, `keygen` |
 | `vortexssh-tui` | Full-screen terminal UI (`ratatui`) |
 | `vortexssh-gui` | Desktop window (`egui`/`eframe`) |
 | `vortexssh-web` | Browser UI served on 127.0.0.1 (`axum` + `xterm.js`) |
@@ -64,7 +65,13 @@ vortexssh connect -D 1080 user@host               # SOCKS5 proxy
 vortexssh sftp user@host                          # interactive SFTP shell
 vortexssh keygen -t ed25519                       # generate a key
 vortexssh profile add mybox user@host -p 2222
+vortexssh serial --list                           # serial ports on this machine
+vortexssh serial /dev/ttyUSB0 -b 115200           # serial console (Ctrl-] q quits)
+vortexssh profile add router /dev/ttyUSB0 --serial -b 9600
 ```
+
+Serial devices usually belong to the `uucp` group on Arch (`dialout` on
+Debian/Fedora); add yourself with `sudo usermod -aG uucp $USER` and log in again.
 
 ### Terminal UI and desktop window
 
@@ -90,6 +97,9 @@ Each browser tab is one SSH connection with:
 - a terminal;
 - a file browser — upload (button or drag and drop), download, rename, delete, new folder;
 - port forwards you can add and stop while connected.
+
+or one serial port (choose *Serial* in *New connection*), with a terminal and
+a *Send break* button.
 
 Saved profiles and your `~/.ssh/config` hosts are listed in the sidebar, and
 profiles can be created and edited there. Login prompts appear as dialogs.

@@ -1,7 +1,7 @@
 // VortexSSH web UI. Plain browser JavaScript, no build step.
 //
 // Each tab opens one WebSocket to the server, which holds one SSH
-// connection: terminal bytes travel as binary frames, everything else as
+// connection or serial port: terminal bytes travel as binary frames, everything else as
 // JSON (see web/src/conn.rs). Text from the server or remote machines is
 // only ever inserted with textContent, never as HTML.
 "use strict";
@@ -202,11 +202,15 @@ const FORWARD_HELP = {
 };
 
 class Tab {
-  /// `target`: what to send in `connect` ({target, port, identity} or {profile}).
+  /// `target`: what to send in `connect` ({target, port, identity},
+  /// {serial: {device, baud, ...}} or {profile}).
   constructor(title, target) {
     this.title = title;
     this.target = target;
+    /// The server's id for the SSH connection (files, forwards); null for
+    /// serial ports and while not connected.
     this.conn = null;
+    this.live = false;
     this.ws = null;
     this.nextId = 1;
     this.replies = new Map();
@@ -227,6 +231,12 @@ class Tab {
     this.forwardsPanel = $(".forwards-panel", this.view);
     this.filesButton = $(".toggle-files", this.view);
     this.forwardsButton = $(".toggle-forwards", this.view);
+    this.breakButton = $(".send-break", this.view);
+    this.breakButton.addEventListener("click", () => this.sendBreak());
+    if (target.serial) {
+      this.filesButton.hidden = true;
+      this.forwardsButton.hidden = true;
+    }
 
     this.term = new Terminal({
       cursorBlink: true,
@@ -271,8 +281,11 @@ class Tab {
     this.view.classList.toggle("closed", state === "closed");
     this.status.textContent = text;
     const ready = state === "connected";
-    this.filesButton.disabled = !ready;
-    this.forwardsButton.disabled = !ready;
+    this.live = ready;
+    const ssh = this.conn !== null;
+    this.filesButton.disabled = !(ready && ssh);
+    this.forwardsButton.disabled = !(ready && ssh);
+    this.breakButton.disabled = !ready;
     if (!ready) {
       this.togglePanel(this.filesPanel, false);
       this.togglePanel(this.forwardsPanel, false);
@@ -331,7 +344,7 @@ class Tab {
 
   /// Large pastes go in chunks: the server refuses messages over 1 MiB.
   sendBytes(bytes) {
-    if (!(this.conn && this.ws && this.ws.readyState === WebSocket.OPEN)) return;
+    if (!(this.live && this.ws && this.ws.readyState === WebSocket.OPEN)) return;
     for (let i = 0; i < bytes.length; i += SEND_CHUNK) this.ws.send(bytes.subarray(i, i + SEND_CHUNK));
   }
 
@@ -360,12 +373,17 @@ class Tab {
         this.warnings.append(el("div", { text: `⚠ ${msg.message}` }));
         this.warnings.hidden = false;
         break;
-      case "ready":
-        this.conn = msg.conn;
+      case "ready": {
+        this.conn = msg.conn ?? null;
+        const serial = msg.protocol === "serial";
+        this.filesButton.hidden = serial;
+        this.forwardsButton.hidden = serial;
+        this.breakButton.hidden = !serial;
         this.setState("connected", msg.label);
         this.renderForwards(msg.forwards);
         this.term.focus();
         break;
+      }
       case "reply": {
         const pending = this.replies.get(msg.id);
         if (!pending) break;
@@ -412,6 +430,20 @@ class Tab {
     return null;
   }
 
+  /// A serial break, e.g. to stop a router's boot and enter ROM monitor.
+  async sendBreak() {
+    this.breakButton.disabled = true;
+    try {
+      await this.request({ type: "break" });
+    } catch (e) {
+      this.warnings.append(el("div", { text: `⚠ Could not send a break: ${e.message}` }));
+      this.warnings.hidden = false;
+    } finally {
+      this.breakButton.disabled = !this.live;
+      this.term.focus();
+    }
+  }
+
   closed(reason, { serverLost = false } = {}) {
     this.conn = null;
     this.abortUploads();
@@ -456,7 +488,7 @@ class Tab {
     this.forwardsButton.classList.toggle("active", !this.forwardsPanel.hidden);
     if (visible && panel === this.filesPanel) this.listFiles(this.cwd ?? "");
     if (visible && panel === this.forwardsPanel) $(".forward-spec", panel).focus();
-    if (!visible && this.conn) this.term.focus();
+    if (!visible && this.live) this.term.focus();
     requestAnimationFrame(() => this.refit());
   }
 
@@ -733,7 +765,7 @@ function select(tab) {
   if (tab) {
     requestAnimationFrame(() => {
       tab.refit();
-      if (tab.conn) tab.term.focus();
+      if (tab.live) tab.term.focus();
     });
   }
 }
@@ -756,7 +788,8 @@ async function loadHosts() {
     el("button", { class: "host", title: `Connect to ${p.name}`,
       onclick: () => new Tab(p.name, { profile: p.name }) },
       el("span", { text: p.name }),
-      el("span", { class: "sub", text: `${p.user}@${p.host}${p.port !== 22 ? `:${p.port}` : ""}` })),
+      el("span", { class: "sub", text: p.protocol === "serial" ? `${p.device} ${p.line}`
+        : `${p.user}@${p.host}${p.port !== 22 ? `:${p.port}` : ""}` })),
     el("button", { class: "edit icon", title: "Edit", "aria-label": `Edit ${p.name}`,
       onclick: () => editProfile(p) }, "✎"))));
   $("#no-profiles").hidden = profiles.length > 0;
@@ -775,16 +808,88 @@ function showHostErrors(errors) {
 
 // New connection dialog
 
+// Both dialogs offer SSH or a serial port. The fields of the other type
+// are hidden and not required.
+
+function protocolOf(form) {
+  return form.querySelector("input[name=protocol]:checked").value;
+}
+
+function showProtocol(form) {
+  const serial = protocolOf(form) === "serial";
+  $(".ssh-only", form).hidden = serial;
+  $(".serial-only", form).hidden = !serial;
+  form.target.required = !serial;
+  form.device.required = serial;
+  if (serial) loadSerialPorts(form);
+}
+
+for (const form of [$("#connect-dialog form"), $("#profile-dialog form")]) {
+  for (const radio of form.querySelectorAll("input[name=protocol]")) {
+    radio.addEventListener("change", () => showProtocol(form));
+  }
+}
+
+/// Fills the device suggestions with this machine's serial ports.
+async function loadSerialPorts(form) {
+  const note = $(".ports-note", form);
+  note.textContent = "Looking for serial ports…";
+  try {
+    const ports = await api("GET", "/api/serial-ports");
+    $("#serial-ports").replaceChildren(...ports.map((p) =>
+      el("option", { value: p.path }, p.description || p.path)));
+    note.textContent = ports.length
+      ? `Found: ${ports.map((p) => p.description ? `${p.path} (${p.description})` : p.path).join(", ")}`
+      : "No serial ports found. USB adapters show up as /dev/ttyUSB0 or /dev/ttyACM0 once plugged in.";
+    if (!form.device.value && ports.length === 1) form.device.value = ports[0].path;
+  } catch (e) {
+    note.textContent = e.message;
+  }
+}
+
+function serialSettings(form) {
+  return {
+    device: form.device.value.trim(),
+    baud: Number(form.baud.value) || 9600,
+    data_bits: Number(form.data_bits.value),
+    parity: form.parity.value,
+    stop_bits: Number(form.stop_bits.value),
+    flow_control: form.flow_control.value,
+  };
+}
+
+function fillSerial(form, device, settings) {
+  form.device.value = device;
+  form.baud.value = settings.baud;
+  form.data_bits.value = settings.data_bits;
+  form.parity.value = settings.parity;
+  form.stop_bits.value = settings.stop_bits;
+  form.flow_control.value = settings.flow_control;
+}
+
+function setProtocol(form, protocol) {
+  form.querySelector(`input[name=protocol][value=${protocol}]`).checked = true;
+  showProtocol(form);
+}
+
 const connectDialog = $("#connect-dialog");
 
 function openConnect() {
-  $("form", connectDialog).reset();
+  const form = $("form", connectDialog);
+  form.reset();
+  showProtocol(form);
   connectDialog.showModal();
 }
 
 connectDialog.addEventListener("close", () => {
   if (connectDialog.returnValue !== "ok") return;
   const form = $("form", connectDialog);
+  if (protocolOf(form) === "serial") {
+    const serial = serialSettings(form);
+    if (!serial.device) return;
+    new Tab(serial.device.replace(/^\/dev\//, ""), { serial });
+    return;
+  }
   const target = form.target.value.trim();
   if (!target) return;
   const port = form.port.value ? Number(form.port.value) : undefined;
@@ -807,7 +912,11 @@ function editProfile(profile) {
   $(".title", profileDialog).textContent = profile ? `Edit ${profile.name}` : "New profile";
   $(".delete", profileDialog).hidden = !profile;
   $(".error", profileDialog).hidden = true;
-  if (profile) {
+  setProtocol(form, profile?.protocol === "serial" ? "serial" : "ssh");
+  if (profile?.protocol === "serial") {
+    form.name.value = profile.name;
+    fillSerial(form, profile.device, profile.serial);
+  } else if (profile) {
     form.name.value = profile.name;
     form.target.value = `${profile.user}@${profile.host}`;
     form.port.value = profile.port !== 22 ? profile.port : "";
@@ -842,6 +951,14 @@ $("form", profileDialog).addEventListener("submit", async (e) => {
         ok: "Delete", danger: true });
       if (!ok) return;
       await api("DELETE", `/api/profiles/${encodeURIComponent(editing.name)}`);
+    } else if (protocolOf(form) === "serial") {
+      const { device, ...serial } = serialSettings(form);
+      await api("POST", "/api/profiles", {
+        name: form.name.value.trim(),
+        target: device,
+        serial,
+        original: editing ? editing.name : null,
+      });
     } else {
       await api("POST", "/api/profiles", {
         name: form.name.value.trim(),
@@ -866,6 +983,6 @@ $("#new-connection").addEventListener("click", openConnect);
 $("#welcome-connect").addEventListener("click", openConnect);
 $("#new-profile").addEventListener("click", () => editProfile(null));
 window.addEventListener("beforeunload", (e) => {
-  if (tabs.some((t) => t.conn)) e.preventDefault();
+  if (tabs.some((t) => t.live)) e.preventDefault();
 });
 loadHosts();

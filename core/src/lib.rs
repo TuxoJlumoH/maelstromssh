@@ -7,6 +7,7 @@ pub mod error;
 pub mod keys;
 pub mod paths;
 pub mod prompt;
+pub mod serial;
 pub mod sftp;
 pub mod ssh;
 pub mod target;

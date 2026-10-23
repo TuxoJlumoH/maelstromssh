@@ -1,11 +1,11 @@
-//! One browser tab = one WebSocket = one SSH connection.
+//! One browser tab = one WebSocket = one SSH connection or serial port.
 //!
 //! The socket carries terminal bytes as binary frames and everything else
 //! as JSON text frames:
 //!
 //! - browser → server: `connect`, `answer` (to a login prompt), `resize`,
-//!   `sftp` and `forward_add` / `forward_stop` requests (each with an `id`
-//!   that the `reply` echoes);
+//!   `break` (serial only), `sftp` and `forward_add` / `forward_stop`
+//!   requests (each with an `id` that the `reply` echoes);
 //! - server → browser: `ask` (a login prompt) and `ask_cancel` (it timed
 //!   out), `warning`, `ready`, `reply`, `forwards` (the current list) and
 //!   `closed`.
@@ -24,13 +24,17 @@ use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, OnceCell};
 use tokio_util::sync::CancellationToken;
-use vortexssh_core::config::{forward_spec, parse_forward, ForwardKind, ForwardRule};
+use vortexssh_core::config::{
+    forward_spec, parse_forward, ForwardKind, ForwardRule, Protocol, SerialSettings,
+};
 use vortexssh_core::prompt::{KiPrompt, Prompter};
+use vortexssh_core::serial::Line;
 use vortexssh_core::sftp::{self, SftpSession};
 use vortexssh_core::ssh::{ChannelMsg, KnownHosts, Session};
-use vortexssh_core::target::TargetArgs;
+use vortexssh_core::target::{Target, TargetArgs};
 use vortexssh_core::tunnel::{ActiveForward, ForwardInfo, Forwarder};
 
 use crate::App;
@@ -145,10 +149,15 @@ fn send(out: &OutTx, value: Value) {
     let _ = out.send(value);
 }
 
-/// Input for the shell.
+/// Input for the shell or serial port.
 enum Input {
     Data(Vec<u8>),
-    Resize { cols: u32, rows: u32 },
+    Resize {
+        cols: u32,
+        rows: u32,
+    },
+    /// A serial break; the reply goes to request `id`.
+    Break(u64),
 }
 
 #[derive(Deserialize)]
@@ -163,6 +172,9 @@ enum In {
         identity: Option<String>,
         #[serde(default)]
         profile: Option<String>,
+        /// Open a serial port instead of an SSH connection.
+        #[serde(default)]
+        serial: Option<SerialForm>,
         cols: u32,
         rows: u32,
     },
@@ -174,6 +186,9 @@ enum In {
     Resize {
         cols: u32,
         rows: u32,
+    },
+    Break {
+        id: u64,
     },
     Sftp {
         id: u64,
@@ -189,6 +204,13 @@ enum In {
         id: u64,
         forward: u64,
     },
+}
+
+#[derive(Deserialize)]
+struct SerialForm {
+    device: String,
+    #[serde(flatten)]
+    settings: SerialSettings,
 }
 
 #[derive(Deserialize)]
@@ -350,18 +372,24 @@ async fn run(app: Arc<App>, socket: WebSocket) {
                 port,
                 identity,
                 profile,
+                serial,
                 cols,
                 rows,
             } => {
                 let (Some(input), Some(term)) = (input_rx.take(), term_tx.take()) else {
                     continue; // already connecting
                 };
-                let args = TargetArgs {
-                    target: target.filter(|t| !t.trim().is_empty()),
-                    port,
-                    identity: identity.filter(|i| !i.trim().is_empty()).map(Into::into),
-                    profile: profile.filter(|p| !p.is_empty()),
-                    auth: None,
+                let args = match serial {
+                    Some(form) => {
+                        Request::Serial(Target::serial(form.device.trim(), form.settings))
+                    }
+                    None => Request::Args(TargetArgs {
+                        target: target.filter(|t| !t.trim().is_empty()),
+                        port,
+                        identity: identity.filter(|i| !i.trim().is_empty()).map(Into::into),
+                        profile: profile.filter(|p| !p.is_empty()),
+                        auth: None,
+                    }),
                 };
                 let prompter = Arc::new(WebPrompter {
                     out: out.clone(),
@@ -390,6 +418,11 @@ async fn run(app: Arc<App>, socket: WebSocket) {
             }
             In::Resize { cols, rows } => {
                 let _ = input_tx.send(Input::Resize { cols, rows });
+            }
+            In::Break { id } => {
+                if input_tx.send(Input::Break(id)).is_err() {
+                    reply(&out, id, Err("not connected".into()));
+                }
             }
             In::Sftp { id, op } => {
                 let Some(conn) = conn.get().cloned() else {
@@ -506,10 +539,18 @@ struct Tab {
     cancel: CancellationToken,
 }
 
+/// What the tab asked to connect to.
+enum Request {
+    /// A host or profile, resolved like the CLI does.
+    Args(TargetArgs),
+    /// A serial port given in the dialog.
+    Serial(Target),
+}
+
 /// Connects, runs the shell until it exits or the tab closes, then cleans up.
 async fn run_session(
     app: Arc<App>,
-    args: TargetArgs,
+    request: Request,
     (cols, rows): (u32, u32),
     prompter: Arc<WebPrompter>,
     tab: Tab,
@@ -523,11 +564,20 @@ async fn run_session(
     let out = prompter.out.clone();
     let closed = |reason: String| send(&out, json!({ "type": "closed", "reason": reason }));
 
-    let target = match tokio::task::spawn_blocking(move || args.resolve()).await {
-        Ok(Ok(target)) => target,
-        Ok(Err(e)) => return closed(e.to_string()),
-        Err(e) => return closed(e.to_string()),
+    let target = match request {
+        Request::Serial(target) => target,
+        Request::Args(args) => {
+            match tokio::task::spawn_blocking(move || args.resolve_any()).await {
+                Ok(Ok(target)) => target,
+                Ok(Err(e)) => return closed(e.to_string()),
+                Err(e) => return closed(e.to_string()),
+            }
+        }
     };
+    if target.protocol == Protocol::Serial {
+        let reason = run_serial(&target, &out, term, input, cancel).await;
+        return closed(reason);
+    }
     for warning in &target.warnings {
         send(&out, json!({ "type": "warning", "message": warning }));
     }
@@ -590,7 +640,9 @@ async fn run_session(
     // output), and it must never stop the loop below from reading, or the
     // two would wait on each other forever.
     let (mut reader, writer) = channel.split();
+    let typing_out = out.clone();
     let mut typing = tokio::spawn(async move {
+        let out = typing_out;
         while let Some(cmd) = input.recv().await {
             match cmd {
                 Input::Data(bytes) => {
@@ -601,6 +653,7 @@ async fn run_session(
                 Input::Resize { cols, rows } => {
                     let _ = writer.window_change(cols, rows, 0, 0).await;
                 }
+                Input::Break(id) => reply(&out, id, Err("breaks are for serial ports".into())),
             }
         }
         true // the tab closed
@@ -652,4 +705,85 @@ async fn run_session(
         tracing::warn!("disconnecting timed out");
     }
     closed(reason);
+}
+
+/// Runs a serial port until the tab closes or the port fails; returns why
+/// it ended.
+async fn run_serial(
+    target: &Target,
+    out: &OutTx,
+    term: TermTx,
+    mut input: mpsc::UnboundedReceiver<Input>,
+    cancel: CancellationToken,
+) -> String {
+    let settings = target.serial.unwrap_or_default();
+    let device = target.host.clone();
+    let line = match tokio::task::spawn_blocking(move || Line::open(&device, &settings)).await {
+        Ok(Ok(line)) => line,
+        Ok(Err(e)) => return e.to_string(),
+        Err(e) => return e.to_string(),
+    };
+    let Line {
+        mut reader,
+        mut writer,
+        breaker,
+    } = line;
+    send(
+        out,
+        json!({ "type": "ready", "conn": null, "protocol": "serial", "label": target.label(),
+                "forwards": [] }),
+    );
+
+    // Writing can wait on the device (flow control); it must not stop
+    // output from being read.
+    let typing_out = out.clone();
+    let mut typing = tokio::spawn(async move {
+        while let Some(cmd) = input.recv().await {
+            match cmd {
+                Input::Data(bytes) => {
+                    if writer.write_all(&bytes).await.is_err() || writer.flush().await.is_err() {
+                        return false;
+                    }
+                }
+                Input::Resize { .. } => {}
+                Input::Break(id) => {
+                    let breaker = breaker.clone();
+                    let result = match tokio::task::spawn_blocking(move || breaker.send()).await {
+                        Ok(r) => r.map(|()| Value::Null).map_err(|e| e.to_string()),
+                        Err(e) => Err(e.to_string()),
+                    };
+                    reply(&typing_out, id, result);
+                }
+            }
+        }
+        true // the tab closed
+    });
+
+    let mut buf = vec![0u8; 16 * 1024];
+    let reason = loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break "closed".to_string(),
+            done = &mut typing => break match done {
+                Ok(true) => "closed".to_string(),
+                _ => "Writing to the serial port failed.".to_string(),
+            },
+            // Only read more output while the browser keeps up.
+            r = reader.read(&mut buf), if term.capacity() > 0 => match r {
+                Ok(0) => break "The serial port closed.".to_string(),
+                Ok(n) => {
+                    if term.try_send(buf[..n].to_vec()).is_err() {
+                        break "closed".to_string();
+                    }
+                }
+                Err(e) => break format!("Reading the serial port failed: {e}"),
+            },
+            space = term.reserve(), if term.capacity() == 0 => {
+                if space.is_err() {
+                    break "closed".to_string();
+                }
+            }
+        }
+    };
+    typing.abort();
+    reason
 }

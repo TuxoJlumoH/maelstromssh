@@ -305,6 +305,12 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
    presses the first submit button; row-reverse puts it on the right. */
 .dialog-form .buttons { display: flex; flex-direction: row-reverse; gap: 8px; justify-content: flex-start; align-items: center; }
 .dialog-form .message { margin: 0; white-space: pre-wrap; word-break: break-word; }
+.dialog-form .protocol { display: flex; gap: 18px; }
+.dialog-form .protocol label { flex-direction: row; align-items: center; gap: 6px; color: var(--text); cursor: pointer; }
+.dialog-form .protocol input { width: auto; }
+.dialog-form .ssh-only, .dialog-form .serial-only { display: flex; flex-direction: column; gap: 12px; }
+.dialog-form .serial-only .row label { flex: 1; width: auto; }
+.dialog-form .serial-only .row label:first-child { flex: 1.4; }
 .fingerprint {
   font-family: ui-monospace, monospace;
   font-size: 13px;

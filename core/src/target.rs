@@ -4,26 +4,50 @@
 
 use std::path::PathBuf;
 
-use crate::config::{AuthMethod, ForwardRule, HostConfig, ProfileStore, SshConfig};
+use crate::config::{
+    AuthMethod, ForwardRule, HostConfig, ProfileStore, Protocol, SerialSettings, SshConfig,
+};
 use crate::error::{Error, Result};
 
 /// A fully resolved connection target.
 #[derive(Debug, Clone)]
 pub struct Target {
+    pub protocol: Protocol,
+    /// The host, or the device path for serial.
     pub host: String,
     pub port: u16,
     pub user: String,
     pub auth: AuthMethod,
     pub forwards: Vec<ForwardRule>,
+    /// Line settings; `Some` for serial.
+    pub serial: Option<SerialSettings>,
     /// Things the user should know before connecting (e.g. ssh_config
     /// settings that are ignored).
     pub warnings: Vec<String>,
 }
 
 impl Target {
-    /// `user@host:port`, for prompts and status bars.
+    /// A serial port, e.g. `/dev/ttyUSB0`.
+    pub fn serial(device: impl Into<String>, settings: SerialSettings) -> Self {
+        Target {
+            protocol: Protocol::Serial,
+            host: device.into(),
+            port: 0,
+            user: String::new(),
+            auth: AuthMethod::default(),
+            forwards: Vec::new(),
+            serial: Some(settings),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// `user@host:port` (or `/dev/ttyUSB0 9600 8N1`), for prompts and
+    /// status bars.
     pub fn label(&self) -> String {
-        format!("{}@{}:{}", self.user, self.host, self.port)
+        match self.protocol {
+            Protocol::Ssh => format!("{}@{}:{}", self.user, self.host, self.port),
+            Protocol::Serial => format!("{} {}", self.host, self.serial.unwrap_or_default()),
+        }
     }
 }
 
@@ -106,22 +130,37 @@ pub struct TargetArgs {
 
 impl TargetArgs {
     /// Resolves the flags against the default profile store and
-    /// `~/.ssh/config` (plus `/etc/ssh/ssh_config`).
+    /// `~/.ssh/config` (plus `/etc/ssh/ssh_config`), for an SSH connection:
+    /// other kinds of profile are an error.
     pub fn resolve(self) -> Result<Target> {
+        ssh_only(self.resolve_any()?)
+    }
+
+    /// Like [`resolve`](Self::resolve), but a profile may be of any
+    /// protocol (e.g. serial); check `Target::protocol`.
+    pub fn resolve_any(self) -> Result<Target> {
         let store = ProfileStore::default_location()?;
         let ssh_config = if self.profile.is_some() {
             SshConfig::default()
         } else {
             SshConfig::load_default()?
         };
-        self.resolve_with(&store, &ssh_config)
+        self.resolve_any_with(&store, &ssh_config)
+    }
+
+    /// [`resolve`](Self::resolve) with a given profile store and ssh_config.
+    pub fn resolve_with(self, store: &ProfileStore, ssh_config: &SshConfig) -> Result<Target> {
+        ssh_only(self.resolve_any_with(store, ssh_config)?)
     }
 
     /// Command-line flags win over `ssh_config`, which wins over defaults.
     /// Saved profiles are used as they are; `ssh_config` does not apply.
-    pub fn resolve_with(self, store: &ProfileStore, ssh_config: &SshConfig) -> Result<Target> {
+    pub fn resolve_any_with(self, store: &ProfileStore, ssh_config: &SshConfig) -> Result<Target> {
         if let Some(name) = self.profile {
             let p = store.load(&name)?;
+            if p.protocol == Protocol::Serial {
+                return Ok(Target::serial(p.host, p.serial.unwrap_or_default()));
+            }
             let auth = match self.auth {
                 Some(choice) => choice.into_method(self.identity)?,
                 None => match self.identity {
@@ -130,11 +169,13 @@ impl TargetArgs {
                 },
             };
             return Ok(Target {
+                protocol: Protocol::Ssh,
                 host: p.host,
                 port: self.port.unwrap_or(p.port),
                 user: p.user,
                 auth,
                 forwards: p.forwards,
+                serial: None,
                 warnings: Vec::new(),
             });
         }
@@ -152,17 +193,29 @@ impl TargetArgs {
             None => auth_with_config(self.auth, &config)?,
         };
         Ok(Target {
+            protocol: Protocol::Ssh,
             host: config.hostname.unwrap_or(host),
             port: self.port.or(config.port).unwrap_or(22),
             user: user.or(config.user).unwrap_or_else(local_user),
             auth,
             forwards: Vec::new(),
+            serial: None,
             warnings: config
                 .unsupported
                 .iter()
                 .map(|k| format!("ignoring {k} (not supported by vortexssh)"))
                 .collect(),
         })
+    }
+}
+
+fn ssh_only(target: Target) -> Result<Target> {
+    match target.protocol {
+        Protocol::Ssh => Ok(target),
+        other => Err(Error::Config(format!(
+            "this is a {} profile; open it with `vortexssh connect` or the web UI",
+            other.name()
+        ))),
     }
 }
 
@@ -255,7 +308,7 @@ mod tests {
                 user: "admin".into(),
                 auth: AuthMethod::Password,
                 forwards: vec![],
-                terminal: Default::default(),
+                ..Profile::new("box")
             })
             .unwrap();
 
@@ -282,6 +335,38 @@ mod tests {
         assert_eq!(t.port, 22);
         assert!(matches!(t.auth, AuthMethod::Agent));
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn serial_profiles_need_resolve_any() {
+        let dir = std::env::temp_dir().join(format!("vortexssh-target-ser-{}", std::process::id()));
+        let store = ProfileStore::new(&dir);
+        store
+            .save(&Profile {
+                protocol: Protocol::Serial,
+                host: "/dev/ttyUSB0".into(),
+                serial: Some(SerialSettings {
+                    baud: 115_200,
+                    ..Default::default()
+                }),
+                ..Profile::new("console")
+            })
+            .unwrap();
+        let args = TargetArgs {
+            profile: Some("console".into()),
+            ..Default::default()
+        };
+        let e = args
+            .clone()
+            .resolve_with(&store, &SshConfig::default())
+            .unwrap_err();
+        assert!(e.to_string().contains("serial profile"), "{e}");
+        let t = args
+            .resolve_any_with(&store, &SshConfig::default())
+            .unwrap();
+        assert_eq!(t.protocol, Protocol::Serial);
+        assert_eq!(t.label(), "/dev/ttyUSB0 115200 8N1");
         std::fs::remove_dir_all(&dir).ok();
     }
 

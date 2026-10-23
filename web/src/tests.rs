@@ -83,6 +83,7 @@ async fn the_page_is_public_and_sets_no_cookie() {
 async fn api_routes_need_the_token() {
     let routes = [
         (Method::GET, "/api/hosts"),
+        (Method::GET, "/api/serial-ports"),
         (Method::POST, "/api/profiles"),
         (Method::DELETE, "/api/profiles/x"),
         (Method::POST, "/api/conn/1/download"),
@@ -448,6 +449,46 @@ async fn profiles_and_hosts() {
             .unwrap();
         assert!(r.status().is_client_error(), "{name}: {}", r.status());
     }
+
+    // Serial profiles: saved with their line settings, listed with them,
+    // and refused with bad settings.
+    let form = json!({ "name": "console", "target": "/dev/ttyUSB0",
+                       "serial": { "baud": 115200, "parity": "even" } });
+    let (status, saved) = json_of(
+        call(Method::POST, "/api/profiles", Some(form))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["protocol"], "serial");
+    assert_eq!(saved["device"], "/dev/ttyUSB0");
+    assert_eq!(saved["line"], "115200 8E1");
+    assert_eq!(saved["serial"]["flow_control"], "none");
+    for form in [
+        json!({ "name": "s2", "target": "", "serial": {} }),
+        json!({ "name": "s3", "target": "/dev/ttyS0", "serial": { "data_bits": 9 } }),
+        json!({ "name": "s4", "target": "/dev/ttyS0", "serial": { "parity": "mark" } }),
+    ] {
+        let (status, body) = json_of(
+            call(Method::POST, "/api/profiles", Some(form.clone()))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(status.is_client_error(), "{form} -> {status} {body}");
+    }
+    let (_, hosts) = json_of(call(Method::GET, "/api/hosts", None).await.unwrap()).await;
+    assert_eq!(hosts["profiles"][0]["protocol"], "serial", "{hosts}");
+    let r = call(Method::DELETE, "/api/profiles/console", None)
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+
+    let (status, ports) =
+        json_of(call(Method::GET, "/api/serial-ports", None).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{ports}");
+    assert!(ports.is_array());
 
     // A broken profile file is reported, not fatal.
     std::fs::write(profiles_dir.join("broken.toml"), "not = [valid").unwrap();

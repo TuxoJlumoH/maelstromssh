@@ -5,20 +5,163 @@ use serde::{Deserialize, Serialize};
 pub struct Profile {
     /// Unique profile name, e.g. "prod-web-1".
     pub name: String,
+    #[serde(default)]
+    pub protocol: Protocol,
+    /// The host name, or the device path (e.g. `/dev/ttyUSB0`) for serial.
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    #[serde(default)]
     pub user: String,
     #[serde(default)]
     pub auth: AuthMethod,
     #[serde(default)]
     pub forwards: Vec<ForwardRule>,
+    /// Line settings; only used by serial profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial: Option<SerialSettings>,
     #[serde(default)]
     pub terminal: TerminalSettings,
 }
 
+impl Profile {
+    /// An SSH profile with default settings and no host yet.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            protocol: Protocol::Ssh,
+            host: String::new(),
+            port: default_port(),
+            user: String::new(),
+            auth: AuthMethod::default(),
+            forwards: Vec::new(),
+            serial: None,
+            terminal: TerminalSettings::default(),
+        }
+    }
+}
+
 fn default_port() -> u16 {
     22
+}
+
+/// How a profile connects.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Protocol {
+    #[default]
+    Ssh,
+    /// A local serial port (COM port), e.g. `/dev/ttyUSB0`.
+    Serial,
+}
+
+impl Protocol {
+    pub fn name(self) -> &'static str {
+        match self {
+            Protocol::Ssh => "ssh",
+            Protocol::Serial => "serial",
+        }
+    }
+}
+
+/// Serial line settings. The defaults are PuTTY's, without flow control:
+/// 9600 baud, 8 data bits, no parity, 1 stop bit.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SerialSettings {
+    #[serde(default = "default_baud")]
+    pub baud: u32,
+    #[serde(default = "default_data_bits")]
+    pub data_bits: u8,
+    #[serde(default)]
+    pub parity: Parity,
+    #[serde(default = "default_stop_bits")]
+    pub stop_bits: u8,
+    #[serde(default)]
+    pub flow_control: FlowControl,
+}
+
+impl Default for SerialSettings {
+    fn default() -> Self {
+        Self {
+            baud: default_baud(),
+            data_bits: default_data_bits(),
+            parity: Parity::None,
+            stop_bits: default_stop_bits(),
+            flow_control: FlowControl::None,
+        }
+    }
+}
+
+impl SerialSettings {
+    /// Rejects settings no serial port supports.
+    pub fn check(&self) -> crate::Result<()> {
+        let bad = |what: String| Err(crate::Error::Config(what));
+        if self.baud == 0 {
+            return bad("the baud rate must be above 0".into());
+        }
+        if !(5..=8).contains(&self.data_bits) {
+            return bad(format!("data bits must be 5 to 8, not {}", self.data_bits));
+        }
+        if !(1..=2).contains(&self.stop_bits) {
+            return bad(format!("stop bits must be 1 or 2, not {}", self.stop_bits));
+        }
+        Ok(())
+    }
+}
+
+/// `9600 8N1`, plus the flow control when there is one.
+impl std::fmt::Display for SerialSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let parity = match self.parity {
+            Parity::None => 'N',
+            Parity::Odd => 'O',
+            Parity::Even => 'E',
+        };
+        write!(
+            f,
+            "{} {}{parity}{}",
+            self.baud, self.data_bits, self.stop_bits
+        )?;
+        match self.flow_control {
+            FlowControl::None => Ok(()),
+            FlowControl::Software => write!(f, " XON/XOFF"),
+            FlowControl::Hardware => write!(f, " RTS/CTS"),
+        }
+    }
+}
+
+fn default_baud() -> u32 {
+    9600
+}
+
+fn default_data_bits() -> u8 {
+    8
+}
+
+fn default_stop_bits() -> u8 {
+    1
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum Parity {
+    #[default]
+    None,
+    Odd,
+    Even,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum FlowControl {
+    #[default]
+    None,
+    /// XON/XOFF.
+    Software,
+    /// RTS/CTS.
+    Hardware,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -51,6 +51,7 @@
       <div class="toolbar">
         <span class="status"><span class="dot"></span><span class="status-text"></span></span>
         <div class="toolbar-buttons">
+          <button class="send-break" hidden disabled title="Send a serial break signal">Send break</button>
           <button class="toggle-files" disabled>Files</button>
           <button class="toggle-forwards" disabled>Port forwards</button>
         </div>
@@ -110,12 +111,30 @@
   <dialog id="connect-dialog">
     <form method="dialog" class="dialog-form">
       <h2>New connection</h2>
-      <label>Host <input name="target" placeholder="user@host or an ssh_config alias" required spellcheck="false" autocomplete="off"></label>
-      <div class="row">
-        <label>Port <input name="port" type="number" min="1" max="65535" placeholder="22"></label>
-        <label class="grow">Key file <input name="identity" placeholder="optional, e.g. ~/.ssh/id_ed25519" spellcheck="false"></label>
+      <div class="protocol" role="radiogroup" aria-label="Connection type">
+        <label><input type="radio" name="protocol" value="ssh" checked> SSH</label>
+        <label><input type="radio" name="protocol" value="serial"> Serial</label>
       </div>
-      <p class="muted small">Logs in like OpenSSH: ssh-agent, your ~/.ssh keys, then password or 2FA.</p>
+      <div class="ssh-only">
+        <label>Host <input name="target" placeholder="user@host or an ssh_config alias" required spellcheck="false" autocomplete="off"></label>
+        <div class="row">
+          <label>Port <input name="port" type="number" min="1" max="65535" placeholder="22"></label>
+          <label class="grow">Key file <input name="identity" placeholder="optional, e.g. ~/.ssh/id_ed25519" spellcheck="false"></label>
+        </div>
+        <p class="muted small">Logs in like OpenSSH: ssh-agent, your ~/.ssh keys, then password or 2FA.</p>
+      </div>
+      <div class="serial-only">
+        <label>Device <input name="device" list="serial-ports" placeholder="/dev/ttyUSB0" spellcheck="false" autocomplete="off"></label>
+        <div class="row">
+          <label>Speed <input name="baud" type="number" min="1" list="baud-rates" value="9600"></label>
+          <label>Data bits <select name="data_bits"><option>8</option><option>7</option><option>6</option><option>5</option></select></label>
+          <label>Parity <select name="parity"><option value="none">None</option><option value="odd">Odd</option><option value="even">Even</option></select></label>
+          <label>Stop bits <select name="stop_bits"><option>1</option><option>2</option></select></label>
+        </div>
+        <label>Flow control <select name="flow_control"><option value="none">None</option><option value="software">XON/XOFF</option><option value="hardware">RTS/CTS</option></select></label>
+        <p class="muted small ports-note"></p>
+      </div>
+
       <div class="buttons">
         <button value="ok" class="primary">Connect</button>
         <button value="cancel" formnovalidate>Cancel</button>
@@ -127,12 +146,30 @@
     <form method="dialog" class="dialog-form">
       <h2 class="title">New profile</h2>
       <label>Name <input name="name" required pattern="[A-Za-z0-9_\-][A-Za-z0-9._\-]*" maxlength="64" title="Letters, digits, '.', '_' and '-'" spellcheck="false"></label>
-      <label>Host <input name="target" placeholder="user@host" required spellcheck="false"></label>
-      <div class="row">
-        <label>Port <input name="port" type="number" min="1" max="65535" placeholder="22"></label>
-        <label class="grow">Key file <input name="identity" placeholder="optional" spellcheck="false"></label>
+      <div class="protocol" role="radiogroup" aria-label="Connection type">
+        <label><input type="radio" name="protocol" value="ssh" checked> SSH</label>
+        <label><input type="radio" name="protocol" value="serial"> Serial</label>
       </div>
-      <label>Port forwards, one per line <textarea name="forwards" rows="3" spellcheck="false" placeholder="-L 8080:localhost:80&#10;-D 1080"></textarea></label>
+      <div class="ssh-only">
+        <label>Host <input name="target" placeholder="user@host" required spellcheck="false"></label>
+        <div class="row">
+          <label>Port <input name="port" type="number" min="1" max="65535" placeholder="22"></label>
+          <label class="grow">Key file <input name="identity" placeholder="optional" spellcheck="false"></label>
+        </div>
+        <label>Port forwards, one per line <textarea name="forwards" rows="3" spellcheck="false" placeholder="-L 8080:localhost:80&#10;-D 1080"></textarea></label>
+      </div>
+      <div class="serial-only">
+        <label>Device <input name="device" list="serial-ports" placeholder="/dev/ttyUSB0" spellcheck="false" autocomplete="off"></label>
+        <div class="row">
+          <label>Speed <input name="baud" type="number" min="1" list="baud-rates" value="9600"></label>
+          <label>Data bits <select name="data_bits"><option>8</option><option>7</option><option>6</option><option>5</option></select></label>
+          <label>Parity <select name="parity"><option value="none">None</option><option value="odd">Odd</option><option value="even">Even</option></select></label>
+          <label>Stop bits <select name="stop_bits"><option>1</option><option>2</option></select></label>
+        </div>
+        <label>Flow control <select name="flow_control"><option value="none">None</option><option value="software">XON/XOFF</option><option value="hardware">RTS/CTS</option></select></label>
+        <p class="muted small ports-note"></p>
+      </div>
+
       <p class="error small" hidden></p>
       <div class="buttons">
         <button value="ok" class="primary">Save</button>
@@ -142,6 +179,13 @@
       </div>
     </form>
   </dialog>
+
+  <datalist id="serial-ports"></datalist>
+  <datalist id="baud-rates">
+    <option value="300"><option value="1200"><option value="2400"><option value="4800">
+    <option value="9600"><option value="19200"><option value="38400"><option value="57600">
+    <option value="115200"><option value="230400"><option value="460800"><option value="921600">
+  </datalist>
 
   <dialog id="ask-dialog">
     <form method="dialog" class="dialog-form">

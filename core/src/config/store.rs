@@ -106,8 +106,7 @@ mod tests {
             port: 22,
             user: "alice".into(),
             auth: AuthMethod::Password,
-            forwards: vec![],
-            terminal: Default::default(),
+            ..Profile::new("test-host")
         };
         store.save(&profile).unwrap();
         let loaded = store.load("test-host").unwrap();
@@ -132,6 +131,45 @@ mod tests {
         .unwrap();
         let p = ProfileStore::new(&tmp).load("old").unwrap();
         assert_eq!(p.port, 22);
+        assert_eq!(p.protocol, crate::config::Protocol::Ssh);
+        assert!(p.serial.is_none());
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn serial_profile_roundtrip() {
+        use crate::config::{FlowControl, Parity, Protocol, SerialSettings};
+        let tmp = tempdir().with_extension("serial");
+        let store = ProfileStore::new(&tmp);
+        let settings = SerialSettings {
+            baud: 115_200,
+            parity: Parity::Even,
+            flow_control: FlowControl::Hardware,
+            ..Default::default()
+        };
+        store
+            .save(&Profile {
+                protocol: Protocol::Serial,
+                host: "/dev/ttyUSB0".into(),
+                serial: Some(settings),
+                ..Profile::new("router")
+            })
+            .unwrap();
+        let text = std::fs::read_to_string(tmp.join("router.toml")).unwrap();
+        assert!(text.contains("protocol = \"serial\""), "{text}");
+        let p = store.load("router").unwrap();
+        assert_eq!(p.protocol, Protocol::Serial);
+        assert_eq!(p.serial, Some(settings));
+
+        // Only the baud rate given: the rest is 8N1.
+        std::fs::write(
+            tmp.join("short.toml"),
+            "name = \"short\"\nprotocol = \"serial\"\nhost = \"/dev/ttyS0\"\n\
+             serial = { baud = 19200 }\n",
+        )
+        .unwrap();
+        let p = store.load("short").unwrap();
+        assert_eq!(p.serial.unwrap().to_string(), "19200 8N1");
         std::fs::remove_dir_all(&tmp).ok();
     }
 

@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -7,9 +7,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::terminal;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use vortexssh_core::config::{
-    parse_forward, AuthMethod, ForwardKind, ForwardRule, Profile, ProfileStore,
+    parse_forward, AuthMethod, FlowControl, ForwardKind, ForwardRule, Parity, Profile,
+    ProfileStore, Protocol, SerialSettings,
 };
 use vortexssh_core::prompt::TtyPrompter;
+use vortexssh_core::serial;
 use vortexssh_core::ssh::{ChannelMsg, KnownHosts, Session};
 use vortexssh_core::target::{
     auth_from_flags, local_user, split_target, AuthChoice, Target, TargetArgs,
@@ -21,7 +23,11 @@ mod sftp;
 use sftp::SftpOp;
 
 #[derive(Parser)]
-#[command(name = "vortexssh", version, about = "An SSH/SFTP client")]
+#[command(
+    name = "vortexssh",
+    version,
+    about = "An SSH/SFTP and serial console client"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -29,7 +35,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Connect to a host and open an interactive shell.
+    /// Connect to a host and open an interactive shell (or open a saved
+    /// serial profile).
     Connect {
         #[command(flatten)]
         target: TargetArgs,
@@ -42,6 +49,18 @@ enum Command {
         /// Dynamic (SOCKS5) forward: [bind:]port (repeatable).
         #[arg(short = 'D', long = "dynamic-forward", value_name = "SPEC")]
         dynamic: Vec<String>,
+    },
+    /// Open a serial (COM) port as a terminal, e.g. a router's console.
+    #[command(after_help = SERIAL_KEYS)]
+    Serial {
+        /// The device, e.g. /dev/ttyUSB0. Omit with --list.
+        #[arg(required_unless_present = "list")]
+        device: Option<String>,
+        #[command(flatten)]
+        line: LineArgs,
+        /// List the serial ports on this machine and exit.
+        #[arg(short, long)]
+        list: bool,
     },
     /// Manage saved connection profiles.
     Profile {
@@ -73,13 +92,52 @@ enum Command {
     },
 }
 
+const SERIAL_KEYS: &str = "While connected: Ctrl-] then q quits, Ctrl-] then b sends a break, \
+Ctrl-] twice sends Ctrl-] itself.";
+
+/// Serial line settings. The defaults are 9600 8N1 without flow control.
+#[derive(clap::Args, Clone, Copy)]
+struct LineArgs {
+    /// Baud rate.
+    #[arg(short, long, default_value_t = 9600)]
+    baud: u32,
+    /// Data bits (5-8).
+    #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u8).range(5..=8))]
+    data_bits: u8,
+    #[arg(long, value_enum, default_value = "none")]
+    parity: Parity,
+    /// Stop bits (1 or 2).
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
+    stop_bits: u8,
+    /// Flow control: none, software (XON/XOFF) or hardware (RTS/CTS).
+    #[arg(long, value_enum, default_value = "none")]
+    flow: FlowControl,
+}
+
+impl From<LineArgs> for SerialSettings {
+    fn from(a: LineArgs) -> Self {
+        SerialSettings {
+            baud: a.baud,
+            data_bits: a.data_bits,
+            parity: a.parity,
+            stop_bits: a.stop_bits,
+            flow_control: a.flow,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum ProfileCmd {
     /// Save a new connection profile (overwrites an existing one of the same name).
     Add {
         name: String,
-        /// host or user@host
+        /// host or user@host; with --serial, the device (e.g. /dev/ttyUSB0)
         target: String,
+        /// Save a serial port profile; set the line with -b, --parity etc.
+        #[arg(long, conflicts_with_all = ["user", "port", "auth", "identity", "local", "remote", "dynamic"])]
+        serial: bool,
+        #[command(flatten)]
+        line: LineArgs,
         #[arg(short, long)]
         user: Option<String>,
         #[arg(short = 'p', long)]
@@ -126,16 +184,31 @@ async fn main() -> Result<()> {
             remote,
             dynamic,
         } => {
-            let mut target = target.resolve()?;
-            target
-                .forwards
-                .extend(parse_forwards(local, remote, dynamic)?);
-            connect(target).await
+            let mut target = target.resolve_any()?;
+            let forwards = parse_forwards(local, remote, dynamic)?;
+            match target.protocol {
+                Protocol::Ssh => {
+                    target.forwards.extend(forwards);
+                    connect(target).await
+                }
+                Protocol::Serial => {
+                    if !forwards.is_empty() {
+                        bail!("port forwards need an SSH connection");
+                    }
+                    open_serial(&target.host, target.serial.unwrap_or_default()).await
+                }
+            }
         }
+        Command::Serial { device, line, list } => match device {
+            Some(device) if !list => open_serial(&device, line.into()).await,
+            _ => serial_list(),
+        },
         Command::Profile { cmd } => match cmd {
             ProfileCmd::Add {
                 name,
                 target,
+                serial,
+                line,
                 user,
                 port,
                 auth,
@@ -144,6 +217,9 @@ async fn main() -> Result<()> {
                 remote,
                 dynamic,
             } => {
+                if serial {
+                    return profile_add_serial(name, target, line.into());
+                }
                 let forwards = parse_forwards(local, remote, dynamic)?;
                 profile_add(name, target, user, port, auth, identity, forwards)
             }
@@ -283,6 +359,132 @@ async fn pump_shell_io(
     Ok(())
 }
 
+fn serial_list() -> Result<()> {
+    let ports = serial::list_ports()?;
+    if ports.is_empty() {
+        println!("No serial ports found.");
+    }
+    for p in ports {
+        if p.description.is_empty() {
+            println!("{}", p.path);
+        } else {
+            println!("{}  {}", p.path, p.description);
+        }
+    }
+    Ok(())
+}
+
+/// Ctrl-], the escape key while a serial port is open.
+const ESCAPE: u8 = 0x1d;
+
+async fn open_serial(device: &str, settings: SerialSettings) -> Result<()> {
+    let line = serial::Line::open(device, &settings)?;
+    eprintln!("Connected to {device} ({settings}). {SERIAL_KEYS}");
+    let raw = std::io::stdin().is_terminal();
+    if raw {
+        terminal::enable_raw_mode().context("enabling raw terminal mode")?;
+    }
+    let result = pump_serial_io(line).await;
+    if raw {
+        terminal::disable_raw_mode().ok();
+    }
+    eprintln!("\r\nDisconnected from {device}.");
+    result
+}
+
+/// What a key press means after the escape key.
+enum Escaped {
+    Quit,
+    Break,
+    Help,
+}
+
+async fn pump_serial_io(line: serial::Line) -> Result<()> {
+    let serial::Line {
+        mut reader,
+        mut writer,
+        breaker,
+    } = line;
+    // Writing may wait for the device (flow control); it must not stop
+    // output from being read.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    let mut typing = tokio::spawn(async move {
+        while let Some(bytes) = rx.recv().await {
+            writer.write_all(&bytes).await?;
+            writer.flush().await?;
+        }
+        std::io::Result::Ok(())
+    });
+
+    let mut stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+    let mut input = [0u8; 4096];
+    let mut output = [0u8; 4096];
+    let mut escaped = false;
+    loop {
+        tokio::select! {
+            r = stdin.read(&mut input) => {
+                let n = r.context("reading local stdin")?;
+                if n == 0 {
+                    break;
+                }
+                let mut send = Vec::with_capacity(n);
+                let mut action = None;
+                for &b in &input[..n] {
+                    if escaped {
+                        escaped = false;
+                        match b {
+                            b'q' | b'Q' | b'.' => action = Some(Escaped::Quit),
+                            b'b' | b'B' => action = Some(Escaped::Break),
+                            ESCAPE => send.push(ESCAPE),
+                            _ => action = Some(Escaped::Help),
+                        }
+                    } else if b == ESCAPE {
+                        escaped = true;
+                    } else {
+                        send.push(b);
+                    }
+                    if matches!(action, Some(Escaped::Quit)) {
+                        break;
+                    }
+                }
+                if !send.is_empty() && tx.send(send).await.is_err() {
+                    break;
+                }
+                match action {
+                    Some(Escaped::Quit) => break,
+                    Some(Escaped::Break) => {
+                        let breaker = breaker.clone();
+                        match tokio::task::spawn_blocking(move || breaker.send()).await? {
+                            Ok(()) => eprint!("\r\n[break sent]\r\n"),
+                            Err(e) => eprint!("\r\n[could not send a break: {e}]\r\n"),
+                        }
+                    }
+                    Some(Escaped::Help) => eprint!("\r\n[{SERIAL_KEYS}]\r\n"),
+                    None => {}
+                }
+            }
+            r = reader.read(&mut output) => {
+                let n = match r {
+                    Ok(0) => bail!("the serial port closed"),
+                    Ok(n) => n,
+                    Err(e) => bail!("reading the serial port: {e}"),
+                };
+                stdout.write_all(&output[..n]).await?;
+                stdout.flush().await?;
+            }
+            done = &mut typing => {
+                match done {
+                    Ok(Err(e)) => bail!("writing to the serial port: {e}"),
+                    _ => break,
+                }
+            }
+        }
+    }
+    typing.abort();
+    Ok(())
+}
+
 #[cfg(unix)]
 mod resize {
     use tokio::signal::unix::{signal, SignalKind};
@@ -332,15 +534,27 @@ fn profile_add(
     let auth = auth_from_flags(auth, identity)?;
 
     let profile = Profile {
-        name: name.clone(),
         host,
         port,
         user,
         auth,
         forwards,
-        terminal: Default::default(),
+        ..Profile::new(name.clone())
     };
     store.save(&profile)?;
+    println!("Saved profile '{name}'");
+    Ok(())
+}
+
+fn profile_add_serial(name: String, device: String, settings: SerialSettings) -> Result<()> {
+    settings.check()?;
+    let store = ProfileStore::default_location()?;
+    store.save(&Profile {
+        protocol: Protocol::Serial,
+        host: device,
+        serial: Some(settings),
+        ..Profile::new(name.clone())
+    })?;
     println!("Saved profile '{name}'");
     Ok(())
 }
@@ -363,6 +577,12 @@ fn profile_show(name: String) -> Result<()> {
     let p = store
         .load(&name)
         .with_context(|| format!("loading profile '{name}'"))?;
+    if p.protocol == Protocol::Serial {
+        println!("name:    {name}");
+        println!("serial:  {}", p.host);
+        println!("line:    {}", p.serial.unwrap_or_default());
+        return Ok(());
+    }
     let auth = match &p.auth {
         AuthMethod::Auto { identities } if identities.is_empty() => "auto".to_string(),
         AuthMethod::Auto { identities } => format!("auto ({})", identities.join(", ")),
