@@ -1,6 +1,6 @@
 pkgbase = vortexssh
 	pkgdesc = SSH/SFTP client with CLI, terminal UI, graphical and browser front-ends
-	pkgver = 0.2.0
+	pkgver = 0.3.0
 	pkgrel = 1
 	url = https://github.com/TuxoJlumoH/vortexssh
 	arch = x86_64
@@ -19,7 +19,7 @@ pkgbase = vortexssh
 	optdepends = libxi: GUI on X11
 	optdepends = openssh: ssh-agent for key-based login
 	options = !lto
-	source = vortexssh-0.2.0::git+ssh://git@github.com/TuxoJlumoH/vortexssh.git#tag=v0.2.0
+	source = vortexssh-0.3.0::git+ssh://git@github.com/TuxoJlumoH/vortexssh.git#tag=v0.3.0
 	sha256sums = SKIP
 
 pkgname = vortexssh

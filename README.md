@@ -32,9 +32,6 @@
 
 ## Install
 
-> **Note:** the web UI (`vortexssh-web`) is newer than the v0.2.0 release. Until the next
-> release, build from source to get it.
-
 - **From source** (Rust stable):
 
   ```bash
