@@ -9,6 +9,10 @@
   terminal UI, a desktop window or your web browser, all driven by one shared engine.
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/files.png" alt="The web UI: an SSH session with the SFTP file browser open"/>
+</p>
+
 ## Features
 
 - **SSH** — works like OpenSSH out of the box: `ssh-agent`, `~/.ssh` keys, password and keyboard-interactive (2FA), `~/.ssh/config` host aliases, and trust-on-first-use host-key verification.
@@ -23,6 +27,14 @@
 
 > Formerly **VortexSSH**. Profiles and logs in the old `vortexssh` folders are moved
 > to the new ones automatically on first run.
+
+## Screenshots
+
+| Full-screen apps (vim) | Port forwards | Serial port |
+|---|---|---|
+| ![vim editing nginx.conf over SSH](docs/screenshots/vim.png) | ![The port forwards panel with a running local forward](docs/screenshots/forwards.png) | ![The new connection dialog set up for a serial port](docs/screenshots/serial.png) |
+
+All screenshots are of the web UI, taken against a test server with made-up hosts.
 
 ## Front-ends
 
