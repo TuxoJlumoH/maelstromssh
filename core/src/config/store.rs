@@ -19,7 +19,7 @@ impl ProfileStore {
     pub fn default_location() -> Result<Self> {
         let base = dirs::config_dir()
             .ok_or_else(|| Error::Config("could not determine the config directory".into()))?;
-        Ok(Self::new(base.join("maelstromssh").join("profiles")))
+        Ok(Self::new(crate::paths::app_dir(&base).join("profiles")))
     }
 
     pub fn list(&self) -> Result<Vec<String>> {

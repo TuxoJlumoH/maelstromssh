@@ -36,6 +36,7 @@ install:
 	done
 	install -d $(BINDIR)
 	install -m755 $(addprefix $(RELEASE)/,$(BINS)) $(BINDIR)/
+	ln -sf maelstromssh $(BINDIR)/mssh
 	install -Dm644 packaging/maelstromssh.desktop $(SHARE)/applications/maelstromssh.desktop
 	for s in $(SIZES); do \
 		install -Dm644 assets/icon-$$s.png $(SHARE)/icons/hicolor/$${s}x$${s}/apps/maelstromssh.png; \
@@ -46,7 +47,7 @@ install:
 		web/assets/vendor/LICENSE-xterm web/assets/vendor/LICENSE-xterm-addon-fit
 
 uninstall:
-	rm -f $(addprefix $(BINDIR)/,$(BINS))
+	rm -f $(addprefix $(BINDIR)/,$(BINS)) $(BINDIR)/mssh
 	rm -f $(SHARE)/applications/maelstromssh.desktop
 	for s in $(SIZES); do rm -f $(SHARE)/icons/hicolor/$${s}x$${s}/apps/maelstromssh.png; done
 	rm -f $(SHARE)/icons/hicolor/scalable/apps/maelstromssh.svg

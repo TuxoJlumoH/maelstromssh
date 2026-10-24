@@ -21,6 +21,9 @@
 - **Full terminal emulator** — 256-color + truecolor, scrollback, reflow-on-resize, scroll regions, alternate screen, mouse reporting, bracketed paste.
 - **Profiles** — saved connection settings, including port forwards.
 
+> Formerly **VortexSSH**. Profiles and logs in the old `vortexssh` folders are moved
+> to the new ones automatically on first run.
+
 ## Front-ends
 
 | Binary | What it is |
@@ -29,6 +32,9 @@
 | `maelstromssh-tui` | Full-screen terminal UI (`ratatui`) |
 | `maelstromssh-gui` | Desktop window (`egui`/`eframe`) |
 | `maelstromssh-web` | Browser UI served on 127.0.0.1 (`axum` + `xterm.js`) |
+
+`make install` and the Arch package also add `mssh` as a short alias for `maelstromssh`
+(not in the `.deb`, where Debian's MultiSSH already owns `mssh`).
 
 ## Install
 

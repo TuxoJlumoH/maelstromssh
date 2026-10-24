@@ -112,7 +112,7 @@ impl Drop for SessionLog {
 /// Where logs go when no file is given: `~/.local/share/maelstromssh/logs`.
 pub fn default_dir() -> Result<PathBuf> {
     dirs::data_dir()
-        .map(|d| d.join("maelstromssh").join("logs"))
+        .map(|d| crate::paths::app_dir(&d).join("logs"))
         .ok_or_else(|| Error::Config("cannot find your data folder ($HOME)".into()))
 }
 
