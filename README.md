@@ -10,6 +10,12 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/TuxoJlumoH/maelstromssh/actions/workflows/ci.yml"><img src="https://github.com/TuxoJlumoH/maelstromssh/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
+  <a href="https://github.com/TuxoJlumoH/maelstromssh/releases/latest"><img src="https://img.shields.io/github/v/release/TuxoJlumoH/maelstromssh" alt="Latest release"/></a>
+  <img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License: MIT OR Apache-2.0"/>
+</p>
+
+<p align="center">
   <img src="docs/screenshots/files.png" alt="The web UI: an SSH session with the SFTP file browser open"/>
 </p>
 
@@ -150,6 +156,12 @@ web/     maelstromssh-web  — browser UI (axum server + plain JS, xterm.js vend
 assets/                 — app icon (SVG/PNG)
 packaging/              — desktop entry, Arch PKGBUILD
 ```
+
+## Roadmap
+
+- Serial, Telnet, raw TCP and session logging in the terminal UI and desktop window
+  (today they are in the command line and the web UI).
+- SFTP file browser and port forwards in the terminal UI and desktop window.
 
 ## Documentation
 
