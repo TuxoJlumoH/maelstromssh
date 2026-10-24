@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use super::Profile;
 
 /// Reads/writes profiles as individual TOML files under a profiles directory
-/// (default: `~/.config/vortexssh/profiles/<name>.toml`).
+/// (default: `~/.config/maelstromssh/profiles/<name>.toml`).
 pub struct ProfileStore {
     dir: PathBuf,
 }
@@ -15,11 +15,11 @@ impl ProfileStore {
         Self { dir: dir.into() }
     }
 
-    /// Uses `$XDG_CONFIG_HOME/vortexssh/profiles` (default `~/.config/...`).
+    /// Uses `$XDG_CONFIG_HOME/maelstromssh/profiles` (default `~/.config/...`).
     pub fn default_location() -> Result<Self> {
         let base = dirs::config_dir()
             .ok_or_else(|| Error::Config("could not determine the config directory".into()))?;
-        Ok(Self::new(base.join("vortexssh").join("profiles")))
+        Ok(Self::new(base.join("maelstromssh").join("profiles")))
     }
 
     pub fn list(&self) -> Result<Vec<String>> {
@@ -45,7 +45,7 @@ impl ProfileStore {
         let text = std::fs::read_to_string(&path).map_err(|e| {
             Error::Config(match e.kind() {
                 std::io::ErrorKind::NotFound => {
-                    format!("no profile named '{name}' (see `vortexssh profile list`)")
+                    format!("no profile named '{name}' (see `maelstromssh profile list`)")
                 }
                 _ => format!("reading {}: {e}", path.display()),
             })
@@ -188,7 +188,7 @@ mod tests {
 
     fn tempdir() -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("vortexssh-test-{}", std::process::id()));
+        p.push(format!("maelstromssh-test-{}", std::process::id()));
         p
     }
 }

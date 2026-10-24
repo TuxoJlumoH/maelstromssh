@@ -45,7 +45,7 @@ impl SessionLog {
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let mut file = options.open(&path).map_err(fail)?;
         let header = format!(
-            "=~=~= VortexSSH log: {label}, started {} =~=~=\n",
+            "=~=~= MaelstromSSH log: {label}, started {} =~=~=\n",
             now.format("%Y-%m-%d %H:%M:%S %z")
         );
         file.write_all(header.as_bytes()).map_err(fail)?;
@@ -101,7 +101,7 @@ impl Drop for SessionLog {
     fn drop(&mut self) {
         if !self.failed {
             let footer = format!(
-                "\n=~=~= VortexSSH log ended {} =~=~=\n",
+                "\n=~=~= MaelstromSSH log ended {} =~=~=\n",
                 Local::now().format("%Y-%m-%d %H:%M:%S %z")
             );
             let _ = self.file.write_all(footer.as_bytes());
@@ -109,10 +109,10 @@ impl Drop for SessionLog {
     }
 }
 
-/// Where logs go when no file is given: `~/.local/share/vortexssh/logs`.
+/// Where logs go when no file is given: `~/.local/share/maelstromssh/logs`.
 pub fn default_dir() -> Result<PathBuf> {
     dirs::data_dir()
-        .map(|d| d.join("vortexssh").join("logs"))
+        .map(|d| d.join("maelstromssh").join("logs"))
         .ok_or_else(|| Error::Config("cannot find your data folder ($HOME)".into()))
 }
 
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn appends_with_header_and_footer() {
-        let dir = std::env::temp_dir().join(format!("vortexssh-log-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("maelstromssh-log-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("&H.log");
         for text in [&b"first\r\n"[..], b"second"] {
@@ -185,10 +185,11 @@ mod tests {
         }
         let got = std::fs::read_to_string(dir.join("sw.log")).unwrap();
         assert_eq!(
-            got.matches("VortexSSH log: telnet sw:23, started").count(),
+            got.matches("MaelstromSSH log: telnet sw:23, started")
+                .count(),
             2
         );
-        assert_eq!(got.matches("VortexSSH log ended").count(), 2);
+        assert_eq!(got.matches("MaelstromSSH log ended").count(), 2);
         assert!(got.contains("first\r\n") && got.contains("second"));
         #[cfg(unix)]
         {

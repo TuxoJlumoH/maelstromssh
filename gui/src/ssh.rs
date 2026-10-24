@@ -3,14 +3,14 @@
 //! raw bytes and commands with the UI over unbounded channels; the UI owns
 //! the core [`Terminal`] and feeds it the bytes it receives.
 //!
-//! [`Terminal`]: vortexssh_core::term::Terminal
+//! [`Terminal`]: maelstromssh_core::term::Terminal
 
 use std::sync::{mpsc as std_mpsc, Arc};
 
+use maelstromssh_core::prompt::{KiPrompt, Prompter};
+use maelstromssh_core::ssh::{ChannelMsg, KnownHosts, Session};
+use maelstromssh_core::target::Target;
 use tokio::sync::mpsc;
-use vortexssh_core::prompt::{KiPrompt, Prompter};
-use vortexssh_core::ssh::{ChannelMsg, KnownHosts, Session};
-use vortexssh_core::target::Target;
 
 /// A command from the UI thread to the SSH task.
 pub enum Cmd {

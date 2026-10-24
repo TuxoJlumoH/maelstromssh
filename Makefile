@@ -1,4 +1,4 @@
-# Build and install VortexSSH.
+# Build and install MaelstromSSH.
 #
 #   make                         # cargo build --release
 #   sudo make install            # into /usr/local
@@ -13,11 +13,11 @@ PREFIX  ?= /usr/local
 DESTDIR ?=
 CARGO   ?= cargo
 
-BINS    := vortexssh vortexssh-tui vortexssh-gui vortexssh-web
+BINS    := maelstromssh maelstromssh-tui maelstromssh-gui maelstromssh-web
 SIZES   := 16 24 32 48 64 128 256 512
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
 ARCH    := $(shell uname -m)
-DISTNAME := vortexssh-$(VERSION)-$(ARCH)-linux
+DISTNAME := maelstromssh-$(VERSION)-$(ARCH)-linux
 
 RELEASE := target/release
 BINDIR  := $(DESTDIR)$(PREFIX)/bin
@@ -36,21 +36,21 @@ install:
 	done
 	install -d $(BINDIR)
 	install -m755 $(addprefix $(RELEASE)/,$(BINS)) $(BINDIR)/
-	install -Dm644 packaging/vortexssh.desktop $(SHARE)/applications/vortexssh.desktop
+	install -Dm644 packaging/maelstromssh.desktop $(SHARE)/applications/maelstromssh.desktop
 	for s in $(SIZES); do \
-		install -Dm644 assets/icon-$$s.png $(SHARE)/icons/hicolor/$${s}x$${s}/apps/vortexssh.png; \
+		install -Dm644 assets/icon-$$s.png $(SHARE)/icons/hicolor/$${s}x$${s}/apps/maelstromssh.png; \
 	done
-	install -Dm644 assets/icon.svg $(SHARE)/icons/hicolor/scalable/apps/vortexssh.svg
-	install -Dm644 -t $(SHARE)/doc/vortexssh README.md HELP.md
-	install -Dm644 -t $(SHARE)/licenses/vortexssh LICENSE-MIT LICENSE-APACHE \
+	install -Dm644 assets/icon.svg $(SHARE)/icons/hicolor/scalable/apps/maelstromssh.svg
+	install -Dm644 -t $(SHARE)/doc/maelstromssh README.md HELP.md
+	install -Dm644 -t $(SHARE)/licenses/maelstromssh LICENSE-MIT LICENSE-APACHE \
 		web/assets/vendor/LICENSE-xterm web/assets/vendor/LICENSE-xterm-addon-fit
 
 uninstall:
 	rm -f $(addprefix $(BINDIR)/,$(BINS))
-	rm -f $(SHARE)/applications/vortexssh.desktop
-	for s in $(SIZES); do rm -f $(SHARE)/icons/hicolor/$${s}x$${s}/apps/vortexssh.png; done
-	rm -f $(SHARE)/icons/hicolor/scalable/apps/vortexssh.svg
-	rm -rf $(SHARE)/doc/vortexssh $(SHARE)/licenses/vortexssh
+	rm -f $(SHARE)/applications/maelstromssh.desktop
+	for s in $(SIZES); do rm -f $(SHARE)/icons/hicolor/$${s}x$${s}/apps/maelstromssh.png; done
+	rm -f $(SHARE)/icons/hicolor/scalable/apps/maelstromssh.svg
+	rm -rf $(SHARE)/doc/maelstromssh $(SHARE)/licenses/maelstromssh
 
 # A relocatable tree (bin/, share/) plus this Makefile's install layout;
 # unpack and copy into /usr/local or ~/.local.
@@ -64,7 +64,7 @@ dist: build
 
 deb: build
 	@command -v cargo-deb >/dev/null || { echo "cargo-deb is missing: cargo install cargo-deb" >&2; exit 1; }
-	$(CARGO) deb -p vortexssh --no-build --output dist/
+	$(CARGO) deb -p maelstromssh --no-build --output dist/
 
 clean:
 	$(CARGO) clean

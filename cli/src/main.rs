@@ -5,28 +5,28 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::terminal;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use vortexssh_core::config::{
+use maelstromssh_core::config::{
     parse_forward, AuthMethod, FlowControl, ForwardKind, ForwardRule, Parity, Profile,
     ProfileStore, Protocol, SerialSettings,
 };
-use vortexssh_core::prompt::TtyPrompter;
-use vortexssh_core::serial;
-use vortexssh_core::session_log::SessionLog;
-use vortexssh_core::ssh::{ChannelMsg, KnownHosts, Session};
-use vortexssh_core::target::{
+use maelstromssh_core::prompt::TtyPrompter;
+use maelstromssh_core::serial;
+use maelstromssh_core::session_log::SessionLog;
+use maelstromssh_core::ssh::{ChannelMsg, KnownHosts, Session};
+use maelstromssh_core::target::{
     auth_from_flags, local_user, split_target, AuthChoice, Target, TargetArgs,
 };
-use vortexssh_core::tcp::{Filter, TcpLine};
-use vortexssh_core::term::Terminal;
-use vortexssh_core::tunnel;
+use maelstromssh_core::tcp::{Filter, TcpLine};
+use maelstromssh_core::term::Terminal;
+use maelstromssh_core::tunnel;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod sftp;
 use sftp::SftpOp;
 
 #[derive(Parser)]
 #[command(
-    name = "vortexssh",
+    name = "maelstromssh",
     version,
     about = "An SSH/SFTP client with serial, Telnet and raw TCP connections"
 )]
@@ -395,7 +395,7 @@ async fn connect(target: Target, log: Option<PathBuf>) -> Result<()> {
 }
 
 async fn pump_shell_io(
-    channel: &mut vortexssh_core::ssh::Channel<vortexssh_core::ssh::Msg>,
+    channel: &mut maelstromssh_core::ssh::Channel<maelstromssh_core::ssh::Msg>,
     term: &mut Terminal,
     log: &mut Option<SessionLog>,
 ) -> Result<()> {
@@ -814,7 +814,7 @@ fn profile_rm(name: String) -> Result<()> {
 }
 
 fn keygen(output: Option<PathBuf>, comment: &str, key_type: KeyType, bits: usize) -> Result<()> {
-    use vortexssh_core::keys::{generate, save_openssh, HashAlg, KeyKind};
+    use maelstromssh_core::keys::{generate, save_openssh, HashAlg, KeyKind};
 
     let output = output.unwrap_or_else(|| match key_type {
         KeyType::Ed25519 => PathBuf::from("id_ed25519"),

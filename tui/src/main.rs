@@ -1,6 +1,6 @@
-//! vortexssh-tui: a full-screen `ratatui` terminal for `vortexssh` SSH sessions.
+//! maelstromssh-tui: a full-screen `ratatui` terminal for `maelstromssh` SSH sessions.
 //!
-//! Drives the `vortexssh-core` terminal emulator (grid, scrollback, reflow)
+//! Drives the `maelstromssh-core` terminal emulator (grid, scrollback, reflow)
 //! and an SSH shell channel in a TUI with a one-line status bar.
 
 mod app;
@@ -11,13 +11,17 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use vortexssh_core::prompt::TtyPrompter;
-use vortexssh_core::ssh::{KnownHosts, Session};
-use vortexssh_core::target::TargetArgs;
-use vortexssh_core::term::Terminal;
+use maelstromssh_core::prompt::TtyPrompter;
+use maelstromssh_core::ssh::{KnownHosts, Session};
+use maelstromssh_core::target::TargetArgs;
+use maelstromssh_core::term::Terminal;
 
 #[derive(Parser)]
-#[command(name = "vortexssh-tui", version, about = "An interactive SSH terminal")]
+#[command(
+    name = "maelstromssh-tui",
+    version,
+    about = "An interactive SSH terminal"
+)]
 struct Cli {
     #[command(flatten)]
     target: TargetArgs,

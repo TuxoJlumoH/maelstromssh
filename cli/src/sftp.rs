@@ -1,16 +1,16 @@
 //! SFTP front-end: one-shot `get`/`put`/`ls`/… commands and an interactive
-//! shell, both driving the `vortexssh_core::sftp` engine.
+//! shell, both driving the `maelstromssh_core::sftp` engine.
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Subcommand;
-use vortexssh_core::paths::expand_tilde;
-use vortexssh_core::sftp::{self, DirEntry, SftpSession};
-use vortexssh_core::ssh::Session;
+use maelstromssh_core::paths::expand_tilde;
+use maelstromssh_core::sftp::{self, DirEntry, SftpSession};
+use maelstromssh_core::ssh::Session;
 
-/// The scriptable SFTP operation, when `vortexssh sftp <target> <op>` is used.
+/// The scriptable SFTP operation, when `maelstromssh sftp <target> <op>` is used.
 #[derive(Subcommand)]
 pub enum SftpOp {
     /// Download a remote file (default local name = remote basename).

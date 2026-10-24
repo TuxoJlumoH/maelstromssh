@@ -1,4 +1,4 @@
-// VortexSSH web UI. Plain browser JavaScript, no build step.
+// MaelstromSSH web UI. Plain browser JavaScript, no build step.
 //
 // Each tab opens one WebSocket to the server, which holds one SSH
 // connection, serial port or Telnet/raw TCP connection: terminal bytes travel as binary frames, everything else as
@@ -26,7 +26,7 @@ function el(tag, props = {}, ...children) {
 // server) and is kept in localStorage, which only this origin, i.e. this
 // port, can read. It goes with every request as a header; there is no
 // cookie, because browsers send cookies to every port on 127.0.0.1.
-const TOKEN_KEY = "vortexssh-token";
+const TOKEN_KEY = "maelstromssh-token";
 {
   const match = location.hash.match(/token=([0-9a-f]+)/);
   if (match) {
@@ -42,8 +42,8 @@ function needLink(refused) {
   if (token() === refused) localStorage.removeItem(TOKEN_KEY);
   $("#welcome").replaceChildren(
     el("img", { src: "/assets/icon.svg", alt: "", width: "72", height: "72" }),
-    el("h1", { text: "VortexSSH" }),
-    el("p", { class: "muted", text: "Open the link that vortexssh-web printed when it started." }));
+    el("h1", { text: "MaelstromSSH" }),
+    el("p", { class: "muted", text: "Open the link that maelstromssh-web printed when it started." }));
   for (const b of document.querySelectorAll("#sidebar button")) b.disabled = true;
 }
 
@@ -311,7 +311,7 @@ class Tab {
     this.setState("connecting", `Connecting to ${this.title}…`);
     this.refit();
 
-    const ws = new WebSocket(`ws://${location.host}/ws`, ["vortexssh", `token-${token()}`]);
+    const ws = new WebSocket(`ws://${location.host}/ws`, ["maelstromssh", `token-${token()}`]);
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {
@@ -334,7 +334,7 @@ class Tab {
         // Whatever answers on this port now may not be the server that
         // started this page (and a restarted one has a new token), so
         // offer no Reconnect that would send it a login.
-        this.closed("Lost the connection to vortexssh-web. Start it again and open the new link it prints.",
+        this.closed("Lost the connection to maelstromssh-web. Start it again and open the new link it prints.",
           { serverLost: true });
       }
     };

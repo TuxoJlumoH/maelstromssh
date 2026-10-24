@@ -1,4 +1,4 @@
-//! vortexssh-web: SSH in the browser. Serves a terminal, a file browser and
+//! maelstromssh-web: SSH in the browser. Serves a terminal, a file browser and
 //! port-forward management on 127.0.0.1, driven by the same core engine as
 //! the CLI, TUI and GUI.
 //!
@@ -35,7 +35,7 @@ const DEFAULT_PORT: u16 = 8022;
 
 #[derive(Parser)]
 #[command(
-    name = "vortexssh-web",
+    name = "maelstromssh-web",
     version,
     about = "SSH in the browser: terminal, file browser and port forwards"
 )]
@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
 
     // The token goes in the fragment, which the browser never sends anywhere.
     let url = format!("http://127.0.0.1:{port}/#token={}", app.token);
-    println!("VortexSSH web UI: {url}");
+    println!("MaelstromSSH web UI: {url}");
     println!("Only this machine can connect. Keep the link private; Ctrl-C stops the server.");
     let opener = if args.no_browser {
         None
@@ -170,11 +170,11 @@ fn open_browser(url: &str, port: u16) -> Option<PathBuf> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let path = dir.join(format!("vortexssh-web-{port}.html"));
+    let path = dir.join(format!("maelstromssh-web-{port}.html"));
     let _ = std::fs::remove_file(&path);
     let page = format!(
         "<!doctype html><meta http-equiv=\"refresh\" content=\"0;url={url}\">\
-         <title>VortexSSH</title><a href=\"{url}\">Open VortexSSH</a>\n"
+         <title>MaelstromSSH</title><a href=\"{url}\">Open MaelstromSSH</a>\n"
     );
     let written = std::fs::OpenOptions::new()
         .write(true)

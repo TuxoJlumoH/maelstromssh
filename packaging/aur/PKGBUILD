@@ -1,11 +1,11 @@
 # Maintainer: TuxoJlumoH <smokie.bg@gmail.com>
 
-pkgname=vortexssh
+pkgname=maelstromssh
 pkgver=0.3.0
 pkgrel=1
 pkgdesc='SSH/SFTP client with CLI, terminal UI, graphical and browser front-ends'
 arch=('x86_64' 'aarch64')
-url='https://github.com/TuxoJlumoH/vortexssh'
+url='https://github.com/TuxoJlumoH/maelstromssh'
 license=('MIT OR Apache-2.0')
 depends=('gcc-libs' 'glibc' 'hicolor-icon-theme')
 optdepends=(
@@ -21,7 +21,7 @@ makedepends=('cargo' 'git')
 options=('!lto')
 # The repository is private, so the tag is fetched with git over SSH (your
 # GitHub key or ssh-agent). Git verifies the content; no checksum needed.
-source=("$pkgname-$pkgver::git+ssh://git@github.com/TuxoJlumoH/vortexssh.git#tag=v$pkgver")
+source=("$pkgname-$pkgver::git+ssh://git@github.com/TuxoJlumoH/maelstromssh.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
 prepare() {

@@ -23,7 +23,7 @@ use crate::App;
 
 /// WebSocket subprotocol the page asks for; the token is offered next to it
 /// as `token-<hex>`.
-pub const WS_PROTOCOL: &str = "vortexssh";
+pub const WS_PROTOCOL: &str = "maelstromssh";
 const WS_TOKEN_PREFIX: &str = "token-";
 
 /// 32 random bytes as hex.

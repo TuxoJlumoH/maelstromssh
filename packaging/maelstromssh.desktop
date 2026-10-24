@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=VortexSSH
+Name=MaelstromSSH
 GenericName=SSH Client
 Comment=Connect to remote machines over SSH
-Exec=vortexssh-gui
-Icon=vortexssh
+Exec=maelstromssh-gui
+Icon=maelstromssh
 Terminal=false
 Categories=Network;RemoteAccess;
 Keywords=ssh;sftp;terminal;remote;shell;
-StartupWMClass=vortexssh-gui
+StartupWMClass=maelstromssh-gui

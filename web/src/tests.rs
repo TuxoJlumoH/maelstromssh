@@ -94,7 +94,7 @@ async fn api_routes_need_the_token() {
     let short = format!("Bearer {}", "a".repeat(63));
     let bare = "a".repeat(64);
     // A cookie is not enough any more, whatever its name.
-    let cookie = format!("vortexssh_{PORT}={}", "a".repeat(64));
+    let cookie = format!("maelstromssh_{PORT}={}", "a".repeat(64));
     for (method, uri) in routes {
         for auth in [
             None,
@@ -130,14 +130,14 @@ async fn api_routes_need_the_token() {
 #[tokio::test]
 async fn websockets_take_the_token_as_a_subprotocol() {
     let token = format!("token-{}", "a".repeat(64));
-    let good = format!("vortexssh, {token}");
-    let wrong = format!("vortexssh, token-{}", "b".repeat(64));
+    let good = format!("maelstromssh, {token}");
+    let wrong = format!("maelstromssh, token-{}", "b".repeat(64));
     // Without a real connection to upgrade, a request that passes the
     // checks gets 426 from the WebSocket handler.
     for (protocols, expected) in [
         (good.as_str(), StatusCode::UPGRADE_REQUIRED),
         (wrong.as_str(), StatusCode::UNAUTHORIZED),
-        ("vortexssh", StatusCode::UNAUTHORIZED),
+        ("maelstromssh", StatusCode::UNAUTHORIZED),
     ] {
         let mut headers = ws_headers(protocols);
         headers.push(("origin", ORIGIN));
@@ -176,7 +176,7 @@ async fn foreign_hosts_are_refused() {
 #[tokio::test]
 async fn changes_and_websockets_need_this_origin() {
     let b = bearer();
-    let token = format!("vortexssh, token-{}", "a".repeat(64));
+    let token = format!("maelstromssh, token-{}", "a".repeat(64));
     for origin in [
         None,
         Some("http://evil.example"),
@@ -340,7 +340,7 @@ async fn profiles_and_hosts() {
     .unwrap();
     std::env::set_var("HOME", home.path());
     std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
-    let profiles_dir = home.path().join(".config/vortexssh/profiles");
+    let profiles_dir = home.path().join(".config/maelstromssh/profiles");
 
     let app = app();
     let b = bearer();
@@ -415,7 +415,7 @@ async fn profiles_and_hosts() {
         .collect();
     files.sort();
     assert_eq!(files, ["box.toml"]);
-    assert!(!home.path().join(".config/vortexssh/evil.toml").exists());
+    assert!(!home.path().join(".config/maelstromssh/evil.toml").exists());
 
     // Rename keeps the settings and removes the old file.
     let form = json!({ "name": "box2", "target": "me@example.com", "port": 2222,

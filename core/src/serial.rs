@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn missing_device_is_a_clear_error() {
-        let e = open("/dev/vortexssh-no-such-port", &SerialSettings::default()).unwrap_err();
+        let e = open("/dev/maelstromssh-no-such-port", &SerialSettings::default()).unwrap_err();
         assert!(e.to_string().contains("no such device"), "{e}");
     }
 

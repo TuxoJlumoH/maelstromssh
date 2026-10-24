@@ -6,11 +6,11 @@
 use std::time::Duration;
 
 use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Stroke};
+use maelstromssh_core::config::{ProfileStore, SshConfig};
+use maelstromssh_core::prompt::KiPrompt;
+use maelstromssh_core::target::{AuthChoice, Target, TargetArgs};
+use maelstromssh_core::term::Terminal;
 use tokio::sync::mpsc;
-use vortexssh_core::config::{ProfileStore, SshConfig};
-use vortexssh_core::prompt::KiPrompt;
-use vortexssh_core::target::{AuthChoice, Target, TargetArgs};
-use vortexssh_core::term::Terminal;
 
 use crate::keys::{self, KeyOut};
 use crate::paint::{self, Palette};
@@ -339,7 +339,7 @@ impl GuiApp {
         let mut submit = false;
         let mut quit = false;
 
-        ui.heading("VortexSSH");
+        ui.heading("MaelstromSSH");
         ui.label("New connection");
         ui.add_space(8.0);
 
@@ -455,7 +455,7 @@ impl GuiApp {
         let label = self.target.as_ref().map(Target::label).unwrap_or_default();
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
 
-        ui.heading("VortexSSH");
+        ui.heading("MaelstromSSH");
         ui.label(format!("Connecting to {label}"));
         for warning in self.target.iter().flat_map(|t| &t.warnings) {
             ui.colored_label(

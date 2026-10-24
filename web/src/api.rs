@@ -10,16 +10,16 @@ use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures_util::TryStreamExt;
+use maelstromssh_core::config::{
+    check_profile_name, parse_forward, AuthMethod, ForwardKind, Profile, ProfileStore, Protocol,
+    SerialSettings, SshConfig,
+};
+use maelstromssh_core::sftp;
+use maelstromssh_core::target::{local_user, split_target};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::{ReaderStream, StreamReader};
-use vortexssh_core::config::{
-    check_profile_name, parse_forward, AuthMethod, ForwardKind, Profile, ProfileStore, Protocol,
-    SerialSettings, SshConfig,
-};
-use vortexssh_core::sftp;
-use vortexssh_core::target::{local_user, split_target};
 
 use crate::App;
 
@@ -76,7 +76,7 @@ pub async fn hosts() -> ApiResult<Json<Value>> {
 /// `GET /api/serial-ports`: the serial ports on this machine.
 pub async fn serial_ports() -> ApiResult<Json<Value>> {
     blocking(|| {
-        let ports = vortexssh_core::serial::list_ports().map_err(server_error)?;
+        let ports = maelstromssh_core::serial::list_ports().map_err(server_error)?;
         let list: Vec<Value> = ports
             .into_iter()
             .map(|p| json!({ "path": p.path, "description": p.description }))
@@ -114,7 +114,7 @@ fn profile_json(p: &Profile) -> Value {
     let forwards: Vec<Value> = p
         .forwards
         .iter()
-        .map(|f| json!({ "kind": f.kind, "spec": vortexssh_core::config::forward_spec(f) }))
+        .map(|f| json!({ "kind": f.kind, "spec": maelstromssh_core::config::forward_spec(f) }))
         .collect();
     json!({
         "name": p.name, "protocol": "ssh", "host": p.host, "port": p.port, "user": p.user,
@@ -475,7 +475,7 @@ fn temp_upload_path(path: &str) -> Result<String, String> {
     while !name.is_char_boundary(end) {
         end -= 1;
     }
-    let temp = format!(".{}.vortexssh-{suffix}.part", &name[..end]);
+    let temp = format!(".{}.maelstromssh-{suffix}.part", &name[..end]);
     Ok(if path.contains('/') {
         format!("{dir}/{temp}")
     } else {
@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn temp_upload_paths_stay_in_the_folder() {
         let temp = temp_upload_path("/home/me/a.txt").unwrap();
-        assert!(temp.starts_with("/home/me/.a.txt.vortexssh-"), "{temp}");
+        assert!(temp.starts_with("/home/me/.a.txt.maelstromssh-"), "{temp}");
         assert!(temp.ends_with(".part"));
         assert_ne!(temp, temp_upload_path("/home/me/a.txt").unwrap());
         assert!(temp_upload_path("a.txt").unwrap().starts_with(".a.txt."));

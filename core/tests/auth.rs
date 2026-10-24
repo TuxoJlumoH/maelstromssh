@@ -4,15 +4,15 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use maelstromssh_core::config::AuthMethod;
+use maelstromssh_core::keys::{generate, save_openssh, KeyKind};
+use maelstromssh_core::prompt::{KiPrompt, Prompter};
+use maelstromssh_core::ssh::{AcceptAll, Session};
+use maelstromssh_core::Error;
 use russh::keys::PublicKey;
 use russh::server::{self, Auth, Response};
 use russh::MethodKind;
 use tokio::net::TcpListener;
-use vortexssh_core::config::AuthMethod;
-use vortexssh_core::keys::{generate, save_openssh, KeyKind};
-use vortexssh_core::prompt::{KiPrompt, Prompter};
-use vortexssh_core::ssh::{AcceptAll, Session};
-use vortexssh_core::Error;
 
 const PASSWORD: &str = "hunter2";
 const OTP: &str = "123456";
@@ -155,7 +155,7 @@ impl Prompter for Scripted {
     }
 }
 
-async fn connect(auth: AuthMethod, prompter: Arc<Scripted>) -> vortexssh_core::Result<Session> {
+async fn connect(auth: AuthMethod, prompter: Arc<Scripted>) -> maelstromssh_core::Result<Session> {
     let port = serve_once().await;
     Session::connect(
         "127.0.0.1",
@@ -220,7 +220,7 @@ async fn cancelling_a_prompt_aborts() {
 
 /// Writes a fresh key to a temp file; returns its path and public key.
 fn key_file(name: &str, passphrase: Option<&str>) -> (std::path::PathBuf, PublicKey) {
-    let dir = std::env::temp_dir().join(format!("vortexssh-auth-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("maelstromssh-auth-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
     let key = generate(KeyKind::Ed25519, "").unwrap();
@@ -250,7 +250,7 @@ async fn connect_to(
     port: u16,
     auth: AuthMethod,
     prompter: Arc<Scripted>,
-) -> vortexssh_core::Result<Session> {
+) -> maelstromssh_core::Result<Session> {
     Session::connect(
         "127.0.0.1",
         port,

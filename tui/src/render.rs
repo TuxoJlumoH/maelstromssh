@@ -1,11 +1,11 @@
 //! ratatui rendering: maps core terminal cells onto a `Buffer` and draws the
 //! session grid plus a one-line status bar.
 
+use maelstromssh_core::term::{Attrs, Color, Terminal};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Widget;
-use vortexssh_core::term::{Attrs, Color, Terminal};
 
 /// Draws the terminal grid over `area`, translating core [`Attrs`] into
 /// ratatui [`Style`]. `show_cursor` positions the block cursor on the live

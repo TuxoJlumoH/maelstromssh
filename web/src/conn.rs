@@ -23,22 +23,22 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
+use maelstromssh_core::config::{
+    forward_spec, parse_forward, ForwardKind, ForwardRule, Protocol, SerialSettings,
+};
+use maelstromssh_core::prompt::{KiPrompt, Prompter};
+use maelstromssh_core::serial::Line;
+use maelstromssh_core::session_log::SessionLog;
+use maelstromssh_core::sftp::{self, SftpSession};
+use maelstromssh_core::ssh::{ChannelMsg, KnownHosts, Session};
+use maelstromssh_core::target::{Target, TargetArgs};
+use maelstromssh_core::tcp::TcpLine;
+use maelstromssh_core::tunnel::{ActiveForward, ForwardInfo, Forwarder};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, OnceCell};
 use tokio_util::sync::CancellationToken;
-use vortexssh_core::config::{
-    forward_spec, parse_forward, ForwardKind, ForwardRule, Protocol, SerialSettings,
-};
-use vortexssh_core::prompt::{KiPrompt, Prompter};
-use vortexssh_core::serial::Line;
-use vortexssh_core::session_log::SessionLog;
-use vortexssh_core::sftp::{self, SftpSession};
-use vortexssh_core::ssh::{ChannelMsg, KnownHosts, Session};
-use vortexssh_core::target::{Target, TargetArgs};
-use vortexssh_core::tcp::TcpLine;
-use vortexssh_core::tunnel::{ActiveForward, ForwardInfo, Forwarder};
 
 use crate::App;
 
@@ -64,19 +64,19 @@ struct RunningForward {
 
 impl Conn {
     /// The SFTP subsystem, opened on first use.
-    pub async fn sftp(&self) -> vortexssh_core::Result<&SftpSession> {
+    pub async fn sftp(&self) -> maelstromssh_core::Result<&SftpSession> {
         self.sftp
             .get_or_try_init(|| sftp::open(&self.session))
             .await
     }
 
-    async fn add_forward(&self, rule: &ForwardRule) -> vortexssh_core::Result<()> {
+    async fn add_forward(&self, rule: &ForwardRule) -> maelstromssh_core::Result<()> {
         let active = self.forwarder.start(rule).await?;
         let mut forwards = self.forwards.lock().await;
         let Some(list) = forwards.as_mut() else {
             drop(forwards);
             let _ = active.stop().await;
-            return Err(vortexssh_core::Error::Other(
+            return Err(maelstromssh_core::Error::Other(
                 "the connection is closed".into(),
             ));
         };
@@ -89,7 +89,7 @@ impl Conn {
         Ok(())
     }
 
-    async fn stop_forward(&self, id: u64) -> vortexssh_core::Result<()> {
+    async fn stop_forward(&self, id: u64) -> maelstromssh_core::Result<()> {
         let running = {
             let mut forwards = self.forwards.lock().await;
             let list = forwards.as_mut();
@@ -171,7 +171,7 @@ impl TermOut {
     /// The log file, as shown to the user.
     fn log_path(&self) -> Option<String> {
         let log = self.log.as_ref()?;
-        Some(vortexssh_core::paths::collapse_home(log.path()))
+        Some(maelstromssh_core::paths::collapse_home(log.path()))
     }
 }
 
@@ -556,7 +556,7 @@ fn reply(out: &OutTx, id: u64, result: Result<Value, String>) {
     send(out, msg);
 }
 
-async fn sftp_op(conn: &Conn, op: SftpOp) -> vortexssh_core::Result<Value> {
+async fn sftp_op(conn: &Conn, op: SftpOp) -> maelstromssh_core::Result<Value> {
     let sftp = conn.sftp().await?;
     Ok(match op {
         SftpOp::List { path } => {
@@ -687,7 +687,7 @@ async fn run_session(
     };
     let shell = tokio::select! {
         r = session.open_shell(TERM_TYPE, cols, rows) => r,
-        _ = cancel.cancelled() => Err(vortexssh_core::Error::Other("closed".into())),
+        _ = cancel.cancelled() => Err(maelstromssh_core::Error::Other("closed".into())),
     };
     let channel = match shell {
         Ok(c) => c,

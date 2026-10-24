@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the VortexSSH icon (SVG source) — a vortex spiral on a dark tile."""
+"""Generate the MaelstromSSH icon (SVG source) — a whirlpool spiral on a dark tile."""
 
 import math
 

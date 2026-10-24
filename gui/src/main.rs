@@ -1,4 +1,4 @@
-//! vortexssh-gui: a graphical (egui/eframe) front-end for `vortexssh`.
+//! maelstromssh-gui: a graphical (egui/eframe) front-end for `maelstromssh`.
 //!
 //! Authentication (password/passphrase/2FA prompts and host-key
 //! confirmation) happens inside the window; the SSH session runs on a
@@ -16,12 +16,12 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use egui::{IconData, ViewportBuilder};
-use vortexssh_core::target::TargetArgs;
+use maelstromssh_core::target::TargetArgs;
 
 use crate::app::GuiApp;
 
 #[derive(Parser)]
-#[command(name = "vortexssh-gui", version, about = "A graphical SSH terminal")]
+#[command(name = "maelstromssh-gui", version, about = "A graphical SSH terminal")]
 struct Cli {
     #[command(flatten)]
     target: TargetArgs,
@@ -50,9 +50,9 @@ fn main() -> Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
-            .with_title("VortexSSH")
-            // Matches StartupWMClass in packaging/vortexssh.desktop.
-            .with_app_id("vortexssh-gui")
+            .with_title("MaelstromSSH")
+            // Matches StartupWMClass in packaging/maelstromssh.desktop.
+            .with_app_id("maelstromssh-gui")
             .with_icon(icon)
             .with_inner_size([1000.0, 650.0])
             .with_min_inner_size([320.0, 240.0]),
@@ -60,7 +60,7 @@ fn main() -> Result<()> {
     };
 
     let result = eframe::run_native(
-        "VortexSSH",
+        "MaelstromSSH",
         options,
         Box::new(move |_cc| Ok(Box::new(GuiApp::new(args, term_type, handle)))),
     );

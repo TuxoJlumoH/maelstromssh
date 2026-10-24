@@ -1,6 +1,6 @@
 [package]
-name = "vortexssh-core"
-description = "SSH/SFTP engine shared by the VortexSSH front-ends"
+name = "maelstromssh-core"
+description = "SSH/SFTP engine shared by the MaelstromSSH front-ends"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,17 +1,17 @@
 //! Manual smoke test for the SFTP subsystem against a local sshd:
 //!
 //! ```sh
-//! cargo run -p vortexssh-core --example sftp_smoke -- 127.0.0.1 2222 <user> <key_path>
+//! cargo run -p maelstromssh-core --example sftp_smoke -- 127.0.0.1 2222 <user> <key_path>
 //! ```
 //!
 //! Not run in CI (no local sshd available there).
 
 use std::sync::Arc;
 
-use vortexssh_core::config::AuthMethod;
-use vortexssh_core::prompt::NoPrompt;
-use vortexssh_core::sftp;
-use vortexssh_core::ssh::{AcceptAll, Session};
+use maelstromssh_core::config::AuthMethod;
+use maelstromssh_core::prompt::NoPrompt;
+use maelstromssh_core::sftp;
+use maelstromssh_core::ssh::{AcceptAll, Session};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

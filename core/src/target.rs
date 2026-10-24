@@ -226,7 +226,7 @@ impl TargetArgs {
             warnings: config
                 .unsupported
                 .iter()
-                .map(|k| format!("ignoring {k} (not supported by vortexssh)"))
+                .map(|k| format!("ignoring {k} (not supported by maelstromssh)"))
                 .collect(),
         })
     }
@@ -236,7 +236,7 @@ fn ssh_only(target: Target) -> Result<Target> {
     match target.protocol {
         Protocol::Ssh => Ok(target),
         other => Err(Error::Config(format!(
-            "this is a {} profile; open it with `vortexssh connect` or the web UI",
+            "this is a {} profile; open it with `maelstromssh connect` or the web UI",
             other.name()
         ))),
     }
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn profile_flags_override_saved_settings() {
-        let dir = std::env::temp_dir().join(format!("vortexssh-target-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("maelstromssh-target-{}", std::process::id()));
         let store = ProfileStore::new(&dir);
         store
             .save(&Profile {
@@ -363,7 +363,8 @@ mod tests {
 
     #[test]
     fn serial_profiles_need_resolve_any() {
-        let dir = std::env::temp_dir().join(format!("vortexssh-target-ser-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("maelstromssh-target-ser-{}", std::process::id()));
         let store = ProfileStore::new(&dir);
         store
             .save(&Profile {
@@ -417,7 +418,8 @@ mod tests {
 
     #[test]
     fn ssh_config_fills_gaps_but_flags_win() {
-        let dir = std::env::temp_dir().join(format!("vortexssh-target-cfg-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("maelstromssh-target-cfg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let key = dir.join("web_key");
         std::fs::write(&key, "").unwrap();

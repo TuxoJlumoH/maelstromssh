@@ -1,7 +1,7 @@
 //! Manual smoke test for port forwarding against a local sshd:
 //!
 //! ```sh
-//! cargo run -p vortexssh-core --example forward_smoke -- 127.0.0.1 2222 <user> <key_path>
+//! cargo run -p maelstromssh-core --example forward_smoke -- 127.0.0.1 2222 <user> <key_path>
 //! ```
 //!
 //! Starts one local (18080), one remote (19000), and one dynamic/SOCKS (1080)
@@ -10,10 +10,10 @@
 
 use std::sync::Arc;
 
-use vortexssh_core::config::{AuthMethod, ForwardKind, ForwardRule};
-use vortexssh_core::prompt::NoPrompt;
-use vortexssh_core::ssh::{AcceptAll, Session};
-use vortexssh_core::tunnel;
+use maelstromssh_core::config::{AuthMethod, ForwardKind, ForwardRule};
+use maelstromssh_core::prompt::NoPrompt;
+use maelstromssh_core::ssh::{AcceptAll, Session};
+use maelstromssh_core::tunnel;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

@@ -3,7 +3,7 @@
 //! does the actual drawing.
 
 use egui::Color32;
-use vortexssh_core::term::{Attrs, Cell, Color};
+use maelstromssh_core::term::{Attrs, Cell, Color};
 
 /// Terminal default foreground/background. `Color::Default` resolves to these.
 #[derive(Clone, Copy)]

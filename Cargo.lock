@@ -2897,6 +2897,92 @@ dependencies = [
 ]
 
 [[package]]
+name = "maelstromssh"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "maelstromssh-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "maelstromssh-core"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "dirs",
+ "libc",
+ "rpassword",
+ "russh",
+ "russh-sftp",
+ "serde",
+ "ssh-key",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-serial",
+ "tokio-test",
+ "toml",
+ "tracing",
+ "unicode-width 0.2.0",
+ "vte",
+]
+
+[[package]]
+name = "maelstromssh-gui"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "eframe",
+ "egui",
+ "maelstromssh-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "maelstromssh-tui"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "maelstromssh-core",
+ "ratatui",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "maelstromssh-web"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "futures-util",
+ "getrandom 0.3.4",
+ "maelstromssh-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5609,92 +5695,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vortexssh"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "vortexssh-core",
-]
-
-[[package]]
-name = "vortexssh-core"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "dirs",
- "libc",
- "rpassword",
- "russh",
- "russh-sftp",
- "serde",
- "ssh-key",
- "thiserror 2.0.20",
- "tokio",
- "tokio-serial",
- "tokio-test",
- "toml",
- "tracing",
- "unicode-width 0.2.0",
- "vte",
-]
-
-[[package]]
-name = "vortexssh-gui"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "clap",
- "eframe",
- "egui",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "vortexssh-core",
-]
-
-[[package]]
-name = "vortexssh-tui"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "ratatui",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-subscriber",
- "vortexssh-core",
-]
-
-[[package]]
-name = "vortexssh-web"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "futures-util",
- "getrandom 0.3.4",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-util",
- "tower",
- "tracing",
- "tracing-subscriber",
- "vortexssh-core",
-]
 
 [[package]]
 name = "vte"

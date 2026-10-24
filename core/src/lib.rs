@@ -1,4 +1,4 @@
-//! vortexssh-core: protocol-agnostic engine for SSH sessions, SFTP, tunneling,
+//! maelstromssh-core: protocol-agnostic engine for SSH sessions, SFTP, tunneling,
 //! and key management. Contains no UI/rendering code — CLI, TUI, and any
 //! future GUI front-ends all drive this engine.
 

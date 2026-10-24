@@ -1,19 +1,19 @@
-# VortexSSH — Help & Reference
+# MaelstromSSH — Help & Reference
 
-A Rust SSH/SFTP client with four front-ends (`vortexssh` CLI, `vortexssh-tui`
-terminal UI, `vortexssh-gui` graphical UI, `vortexssh-web` browser UI) all
-driven by one UI-agnostic engine (`vortexssh-core`).
+A Rust SSH/SFTP client with four front-ends (`maelstromssh` CLI, `maelstromssh-tui`
+terminal UI, `maelstromssh-gui` graphical UI, `maelstromssh-web` browser UI) all
+driven by one UI-agnostic engine (`maelstromssh-core`).
 
-- Workspace: `~/Projects/vortexssh`
+- Workspace: the repository root (`maelstromssh/`)
 - Crates: `core/` (library), `cli/`, `tui/`, `gui/`, `web/` (binaries)
-- Config dir: `~/.config/vortexssh/profiles/*.toml`
+- Config dir: `~/.config/maelstromssh/profiles/*.toml`
 
 ---
 
 ## 1. Build
 
 ```bash
-cd ~/Projects/vortexssh
+cd maelstromssh
 cargo build --release            # builds all four binaries
 cargo test --workspace           # run the test suite
 ```
@@ -27,8 +27,8 @@ Install and packaging (see the `Makefile`):
 | `make` | `cargo build --release --locked` |
 | `sudo make install` | binaries, `.desktop` entry, icons, docs and licenses under `/usr/local` (`PREFIX=`, `DESTDIR=` supported) |
 | `make uninstall` | removes what `install` copied (same `PREFIX`) |
-| `make dist` | `dist/vortexssh-<ver>-<arch>-linux.tar.gz` + `.sha256` |
-| `make deb` | `dist/vortexssh_<ver>-1_<arch>.deb` (needs `cargo install cargo-deb`) |
+| `make dist` | `dist/maelstromssh-<ver>-<arch>-linux.tar.gz` + `.sha256` |
+| `make deb` | `dist/maelstromssh_<ver>-1_<arch>.deb` (needs `cargo install cargo-deb`) |
 
 `packaging/aur/PKGBUILD` builds an Arch package from a release tag
 (`cd packaging/aur && makepkg -si`). The repository is private, so it clones
@@ -90,7 +90,7 @@ Host web
     IdentityFile ~/.ssh/web_key
 ```
 
-`vortexssh connect web` then connects to `deploy@10.0.0.5:2222` with that key.
+`maelstromssh connect web` then connects to `deploy@10.0.0.5:2222` with that key.
 
 - Supported: `Host` (with `*`, `?` and `!` patterns), `Match` (`all`, `host`,
   `originalhost`, `user`, `localuser`, `final`; others never match),
@@ -105,16 +105,16 @@ Host web
 
 ---
 
-## 3. CLI — `vortexssh`
+## 3. CLI — `maelstromssh`
 
 ```
-vortexssh <SUBCOMMAND>
+maelstromssh <SUBCOMMAND>
 ```
 
 ### `connect` — open an interactive shell
 
 ```
-vortexssh connect [TARGET] [OPTIONS]
+maelstromssh connect [TARGET] [OPTIONS]
 ```
 
 | Argument / flag | Description |
@@ -130,15 +130,15 @@ vortexssh connect [TARGET] [OPTIONS]
 | `--log <FILE>` | Save the session output to `FILE` (see *Session logs* below). |
 
 ```bash
-vortexssh connect user@example.com
-vortexssh connect -i ~/.ssh/id_ed25519 git@github.com
-vortexssh connect --profile prod-web
+maelstromssh connect user@example.com
+maelstromssh connect -i ~/.ssh/id_ed25519 git@github.com
+maelstromssh connect --profile prod-web
 
 # Port forwarding
-vortexssh connect -L 8080:localhost:80 user@example.com        # local
-vortexssh connect -R 9000:db.internal:5432 user@example.com    # remote
-vortexssh connect -D 1080 user@example.com                     # SOCKS5 proxy
-vortexssh connect -L 127.0.0.1:8080:localhost:80 user@host     # bind a specific local addr
+maelstromssh connect -L 8080:localhost:80 user@example.com        # local
+maelstromssh connect -R 9000:db.internal:5432 user@example.com    # remote
+maelstromssh connect -D 1080 user@example.com                     # SOCKS5 proxy
+maelstromssh connect -L 127.0.0.1:8080:localhost:80 user@host     # bind a specific local addr
 ```
 
 With a serial, Telnet or raw profile, `connect --profile NAME` opens that
@@ -163,16 +163,16 @@ Telnet negotiation is not logged.
   and so are not logged, but Telnet servers may echo what you type.
 
 ```bash
-vortexssh connect user@host --log session.log
-vortexssh serial /dev/ttyUSB0 -b 115200 --log ~/logs              # ~/logs/ttyUSB0-20261024-101500.log
-vortexssh telnet switch.lan --log '~/logs/&H-&Y&M&D.log'          # one file per switch per day
+maelstromssh connect user@host --log session.log
+maelstromssh serial /dev/ttyUSB0 -b 115200 --log ~/logs              # ~/logs/ttyUSB0-20261024-101500.log
+maelstromssh telnet switch.lan --log '~/logs/&H-&Y&M&D.log'          # one file per switch per day
 ```
 
 ### `serial` — open a serial (COM) port
 
 ```
-vortexssh serial <DEVICE> [OPTIONS]
-vortexssh serial --list
+maelstromssh serial <DEVICE> [OPTIONS]
+maelstromssh serial --list
 ```
 
 | Argument / flag | Description |
@@ -191,9 +191,9 @@ While connected, **Ctrl-]** is the escape key: **Ctrl-] q** quits,
 exclusively, so a second program can't open it at the same time.
 
 ```bash
-vortexssh serial --list
-vortexssh serial /dev/ttyUSB0 -b 115200
-vortexssh serial /dev/ttyS0 -b 9600 --parity even --stop-bits 2 --flow hardware
+maelstromssh serial --list
+maelstromssh serial /dev/ttyUSB0 -b 115200
+maelstromssh serial /dev/ttyS0 -b 9600 --parity even --stop-bits 2 --flow hardware
 ```
 
 "Permission denied" means you are not in the group that owns the device
@@ -201,14 +201,14 @@ vortexssh serial /dev/ttyS0 -b 9600 --parity even --stop-bits 2 --flow hardware
 and Fedora. Add yourself with `sudo usermod -aG uucp $USER`, then log out
 and back in. To try it without hardware, make a virtual cable with
 `socat -d -d pty,raw,echo=0 pty,raw,echo=0` and open one of the two
-`/dev/pts/N` devices it prints, e.g. with `vortexssh serial`, and the
+`/dev/pts/N` devices it prints, e.g. with `maelstromssh serial`, and the
 other one with a second program.
 
 ### `telnet` and `raw` — Telnet and raw TCP connections
 
 ```
-vortexssh telnet <HOST> [PORT]     # PORT defaults to 23
-vortexssh raw <HOST> <PORT>
+maelstromssh telnet <HOST> [PORT]     # PORT defaults to 23
+maelstromssh raw <HOST> <PORT>
 ```
 
 `telnet` speaks the Telnet protocol: it asks the server to echo and to work
@@ -226,18 +226,18 @@ session, passwords included. Use it only for equipment that has nothing
 else, on a network you trust.
 
 ```bash
-vortexssh telnet 192.168.1.1
-vortexssh telnet switch.lan 2323
-vortexssh raw 192.168.1.50 4001
+maelstromssh telnet 192.168.1.1
+maelstromssh telnet switch.lan 2323
+maelstromssh raw 192.168.1.50 4001
 ```
 
 ### `profile` — manage saved profiles
 
 ```
-vortexssh profile add <NAME> <TARGET> [OPTIONS]
-vortexssh profile list
-vortexssh profile show <NAME>
-vortexssh profile rm <NAME>
+maelstromssh profile add <NAME> <TARGET> [OPTIONS]
+maelstromssh profile list
+maelstromssh profile show <NAME>
+maelstromssh profile rm <NAME>
 ```
 
 `add` options: `-u, --user <USER>`, `-p, --port <PORT>`, `--auth <AUTH>`,
@@ -248,19 +248,19 @@ With `--telnet` (port 23 unless `-p` is given) or `--raw` (`-p` required),
 `TARGET` is a host name or address.
 
 ```bash
-vortexssh profile add mybox user@10.0.0.5 -p 2222 -i ~/.ssh/id_ed25519
-vortexssh profile add switch /dev/ttyUSB0 --serial -b 9600
-vortexssh profile add oldrouter 192.168.1.1 --telnet
-vortexssh profile add ser2net 192.168.1.50 --raw -p 4001
-vortexssh profile list
-vortexssh profile show mybox
-vortexssh profile rm mybox
+maelstromssh profile add mybox user@10.0.0.5 -p 2222 -i ~/.ssh/id_ed25519
+maelstromssh profile add switch /dev/ttyUSB0 --serial -b 9600
+maelstromssh profile add oldrouter 192.168.1.1 --telnet
+maelstromssh profile add ser2net 192.168.1.50 --raw -p 4001
+maelstromssh profile list
+maelstromssh profile show mybox
+maelstromssh profile rm mybox
 ```
 
 ### `keygen` — generate an SSH keypair
 
 ```
-vortexssh keygen [OPTIONS]
+maelstromssh keygen [OPTIONS]
 ```
 
 | Flag | Description |
@@ -271,9 +271,9 @@ vortexssh keygen [OPTIONS]
 | `-b, --bits <BITS>` | RSA modulus size in bits (default `3072`; ignored for ed25519). |
 
 ```bash
-vortexssh keygen                               # ed25519 -> id_ed25519
-vortexssh keygen -t rsa                        # rsa (3072) -> id_rsa
-vortexssh keygen -t rsa -b 4096 -o ~/.ssh/id_rsa -c "me@host"
+maelstromssh keygen                               # ed25519 -> id_ed25519
+maelstromssh keygen -t rsa                        # rsa (3072) -> id_rsa
+maelstromssh keygen -t rsa -b 4096 -o ~/.ssh/id_rsa -c "me@host"
 ```
 
 ### `sftp` — transfer files
@@ -282,14 +282,14 @@ One-shot (scriptable) or interactive. Shares the `--port`/`--identity`/
 `--profile`/`--auth` options with `connect`.
 
 ```bash
-vortexssh sftp user@host                      # interactive shell
-vortexssh sftp user@host get app.log          # download to ./app.log
-vortexssh sftp user@host get app.log /tmp/a   # download to a specific path
-vortexssh sftp user@host put ./app.log app.log
-vortexssh sftp user@host ls /var/log
-vortexssh sftp user@host rm app.log
-vortexssh sftp user@host mkdir backups
-vortexssh sftp user@host rename old.txt new.txt
+maelstromssh sftp user@host                      # interactive shell
+maelstromssh sftp user@host get app.log          # download to ./app.log
+maelstromssh sftp user@host get app.log /tmp/a   # download to a specific path
+maelstromssh sftp user@host put ./app.log app.log
+maelstromssh sftp user@host ls /var/log
+maelstromssh sftp user@host rm app.log
+maelstromssh sftp user@host mkdir backups
+maelstromssh sftp user@host rename old.txt new.txt
 ```
 
 One-shot subcommands: `get <remote> [local]`, `put <local> [remote]`,
@@ -311,13 +311,13 @@ only (recursive directory transfer is not implemented yet).
 
 ---
 
-## 4. TUI — `vortexssh-tui`
+## 4. TUI — `maelstromssh-tui`
 
 Full-screen terminal UI (`ratatui`). Same flags as the GUI; auth/password
 prompts happen on the ordinary terminal before the TUI takes over.
 
 ```
-vortexssh-tui [TARGET] [OPTIONS]
+maelstromssh-tui [TARGET] [OPTIONS]
 ```
 
 | Argument / flag | Description |
@@ -329,8 +329,8 @@ vortexssh-tui [TARGET] [OPTIONS]
 | `--auth <AUTH>` | Auth method (default `auto`, see §2). |
 
 ```bash
-vortexssh-tui user@example.com
-vortexssh-tui --profile mybox
+maelstromssh-tui user@example.com
+maelstromssh-tui --profile mybox
 ```
 
 Controls: type normally; `Ctrl+]` quits; mouse wheel / `Shift+PgUp`/`PgDn`
@@ -338,21 +338,21 @@ scrolls back; window resize resizes the remote PTY.
 
 ---
 
-## 5. GUI — `vortexssh-gui`
+## 5. GUI — `maelstromssh-gui`
 
 Graphical window (`egui`/`eframe`). Same flags as the TUI. Authentication
 (password/passphrase/2FA prompts and host-key confirmation) happens **inside the
 window**, so it can be launched from a desktop menu without a terminal.
 
 ```
-vortexssh-gui [TARGET] [OPTIONS]
+maelstromssh-gui [TARGET] [OPTIONS]
 ```
 
 ```bash
-vortexssh-gui                      # opens the connect form
-vortexssh-gui user@example.com
-vortexssh-gui -i ~/.ssh/id_ed25519 git@github.com
-vortexssh-gui --profile mybox
+maelstromssh-gui                      # opens the connect form
+maelstromssh-gui user@example.com
+maelstromssh-gui -i ~/.ssh/id_ed25519 git@github.com
+maelstromssh-gui --profile mybox
 ```
 
 Without a `TARGET` or `--profile`, the window opens on a **connect form**. It has
@@ -377,12 +377,12 @@ Arrows / Home / End / F-keys / `Alt`+key are forwarded; mouse reporting
 
 ---
 
-## 6. Web UI — `vortexssh-web`
+## 6. Web UI — `maelstromssh-web`
 
 A small local web server; the browser is the screen.
 
 ```
-vortexssh-web [--port PORT] [--no-browser]
+maelstromssh-web [--port PORT] [--no-browser]
 ```
 
 It listens on **127.0.0.1 only** (port 8022, or a free port if that is
@@ -404,7 +404,7 @@ server makes old links invalid, and the page then asks for the new one.
 - **Terminal**: `xterm.js`, resized with the window. Closed connections show a
   *Reconnect* button.
 - **Session logs**: tick *Save a log of the session output* in *New
-  connection*. The output goes to `~/.local/share/vortexssh/logs/`
+  connection*. The output goes to `~/.local/share/maelstromssh/logs/`
   (`HOST-YYYYMMDD-HHMMSS.log`, mode 600); the tab shows *Logging*, with the
   file's path when you hover over it.
 - **Files**: browse, upload (button or drag and drop), download, rename,
@@ -430,7 +430,7 @@ Downloads use one-time links that expire after a minute.
 
 ## 7. Profiles (file format)
 
-Profiles are TOML files at `~/.config/vortexssh/profiles/<name>.toml`.
+Profiles are TOML files at `~/.config/maelstromssh/profiles/<name>.toml`.
 
 ```toml
 name = "mybox"
@@ -475,7 +475,7 @@ port = 23
 
 ---
 
-## 8. Core library (`vortexssh-core`) — functions
+## 8. Core library (`maelstromssh-core`) — functions
 
 The engine every front-end uses. No UI/rendering code lives here.
 
@@ -529,7 +529,7 @@ The engine every front-end uses. No UI/rendering code lives here.
 ### `session_log` — session logs
 
 - `SessionLog::create(path, label, host, port)` — append to `path` (a folder gets a dated name; PuTTY's `&H &P &Y &M &D &T` are filled in), mode 600, with a header line
-- `SessionLog::create_default(label, host, port)` — in `default_dir()` (`~/.local/share/vortexssh/logs`)
+- `SessionLog::create_default(label, host, port)` — in `default_dir()` (`~/.local/share/maelstromssh/logs`)
 - `write(bytes)`, `path()`, `take_error()` (a failed write is reported once; logging then stops, the session goes on); the end line is written on drop
 - `expand_name(template, host, port, time)`
 

@@ -6,7 +6,7 @@ members = ["core", "cli", "tui", "gui", "web"]
 version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/TuxoJlumoH/vortexssh"
+repository = "https://github.com/TuxoJlumoH/maelstromssh"
 authors = ["TuxoJlumoH <smokie.bg@gmail.com>"]
 
 [profile.release]

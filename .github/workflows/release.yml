@@ -47,6 +47,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            --title "VortexSSH $GITHUB_REF_NAME" \
+            --title "MaelstromSSH $GITHUB_REF_NAME" \
             --generate-notes \
             dist/*.tar.gz dist/*.tar.gz.sha256 dist/*.deb dist/*.deb.sha256

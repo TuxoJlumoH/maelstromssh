@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn includes_are_globbed_and_conditional() {
-        let dir = std::env::temp_dir().join(format!("vortexssh-sshcfg-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("maelstromssh-sshcfg-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("conf.d")).unwrap();
         std::fs::write(dir.join("conf.d/b.conf"), "Host inc\n  Port 2\n").unwrap();
         std::fs::write(dir.join("conf.d/a.conf"), "Host inc\n  Port 1\n").unwrap();

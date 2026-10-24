@@ -71,15 +71,16 @@ mod tests {
 
     #[test]
     fn generate_ed25519() {
-        let key = generate(KeyKind::Ed25519, "test@vortexssh").unwrap();
+        let key = generate(KeyKind::Ed25519, "test@maelstromssh").unwrap();
         assert_eq!(key.algorithm(), Algorithm::Ed25519);
     }
 
     #[test]
     fn generate_rsa_and_roundtrip_to_disk() {
-        let key = generate(KeyKind::Rsa { bits: 2048 }, "test@vortexssh").unwrap();
+        let key = generate(KeyKind::Rsa { bits: 2048 }, "test@maelstromssh").unwrap();
         assert!(key.algorithm().is_rsa());
-        let path = std::env::temp_dir().join(format!("vortexssh-test-rsa-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("maelstromssh-test-rsa-{}", std::process::id()));
         save_openssh(&key, &path).unwrap();
         let loaded = load_openssh(&path, None).unwrap();
         assert!(loaded.algorithm().is_rsa());
@@ -93,8 +94,9 @@ mod tests {
 
     #[test]
     fn generate_and_roundtrip_to_disk() {
-        let key = generate(KeyKind::Ed25519, "test@vortexssh").unwrap();
-        let path = std::env::temp_dir().join(format!("vortexssh-test-key-{}", std::process::id()));
+        let key = generate(KeyKind::Ed25519, "test@maelstromssh").unwrap();
+        let path =
+            std::env::temp_dir().join(format!("maelstromssh-test-key-{}", std::process::id()));
         save_openssh(&key, &path).unwrap();
         let loaded = load_openssh(&path, None).unwrap();
         assert_eq!(loaded.algorithm(), Algorithm::Ed25519);

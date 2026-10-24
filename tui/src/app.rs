@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{Event, KeyEventKind, MouseButton, MouseEventKind};
+use maelstromssh_core::ssh::{Channel, ChannelMsg, Msg};
+use maelstromssh_core::term::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, EventStream};
 use ratatui::crossterm::execute;
@@ -16,8 +18,6 @@ use ratatui::crossterm::terminal::{
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Terminal as RatuiTerminal;
 use tokio_stream::StreamExt;
-use vortexssh_core::ssh::{Channel, ChannelMsg, Msg};
-use vortexssh_core::term::Terminal;
 
 use crate::input::{encode_key, encode_sgr_mouse, scroll_action, ScrollAction};
 use crate::render::{GridView, StatusBar};

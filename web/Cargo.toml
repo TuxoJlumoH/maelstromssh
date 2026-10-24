@@ -1,6 +1,6 @@
 [package]
-name = "vortexssh-web"
-description = "Browser front-end for VortexSSH: terminal, file browser and port forwards"
+name = "maelstromssh-web"
+description = "Browser front-end for MaelstromSSH: terminal, file browser and port forwards"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-vortexssh-core = { path = "../core" }
+maelstromssh-core = { path = "../core" }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
