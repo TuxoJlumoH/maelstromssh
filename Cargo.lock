@@ -2898,7 +2898,7 @@ dependencies = [
 
 [[package]]
 name = "maelstromssh"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2911,7 +2911,7 @@ dependencies = [
 
 [[package]]
 name = "maelstromssh-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2935,7 +2935,7 @@ dependencies = [
 
 [[package]]
 name = "maelstromssh-gui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2949,7 +2949,7 @@ dependencies = [
 
 [[package]]
 name = "maelstromssh-tui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2964,7 +2964,7 @@ dependencies = [
 
 [[package]]
 name = "maelstromssh-web"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
