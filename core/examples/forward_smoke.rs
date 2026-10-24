@@ -20,7 +20,9 @@ async fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let host = args.next().unwrap_or_else(|| "127.0.0.1".into());
     let port: u16 = args.next().unwrap_or_else(|| "2222".into()).parse()?;
-    let user = args.next().unwrap_or_else(|| "pavel".into());
+    let user = args
+        .next()
+        .unwrap_or_else(maelstromssh_core::target::local_user);
     let key_path = args
         .next()
         .expect("usage: forward_smoke <host> <port> <user> <key_path>");
