@@ -74,8 +74,11 @@ function formatSize(bytes) {
 
 function formatTime(seconds) {
   if (seconds == null) return "";
-  return new Date(seconds * 1000).toLocaleString(undefined, {
-    year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  const date = new Date(seconds * 1000);
+  // Like `ls -l`: the year only when it isn't this year, so names get more room.
+  const year = date.getFullYear() === new Date().getFullYear() ? undefined : "numeric";
+  return date.toLocaleString(undefined, {
+    year, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
   });
 }
 
@@ -244,6 +247,8 @@ class Tab {
       cursorBlink: true,
       fontFamily: '"JetBrains Mono", "Fira Code", "DejaVu Sans Mono", ui-monospace, monospace',
       fontSize: 14,
+      // At 1.0 some fonts (Noto Sans Mono) lose the underscore row.
+      lineHeight: 1.2,
       scrollback: 10000,
       theme: TERMINAL_THEME,
       allowProposedApi: false,
