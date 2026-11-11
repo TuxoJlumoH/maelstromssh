@@ -8,7 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-russh = "0.63"
+russh = "0.65"
 russh-sftp = "3"
 vte = "0.15"
 unicode-width = "0.2"
