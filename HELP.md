@@ -332,19 +332,27 @@ maelstromssh-tui [TARGET] [OPTIONS]
 
 | Argument / flag | Description |
 |---|---|
-| `TARGET` | `user@host` or `host`. |
-| `-p, --port <PORT>` | Port (default `22`). |
+| `TARGET` | `user@host`, `host`, or serial device path with `--serial`. |
+| `-p, --port <PORT>` | Port (default `22` for SSH, `23` for Telnet). |
 | `-i, --identity <PATH>` | Private key to try first (`~` is expanded). |
-| `--profile <NAME>` | Load a saved profile (conflicts with `TARGET`). |
+| `-J, --jump <JUMP>` | Jump host(s) (`[user@]host[:port][,...]`). |
+| `--profile <NAME>` | Load a saved profile (SSH, serial, Telnet or raw TCP). |
 | `--auth <AUTH>` | Auth method (default `auto`, see §2). |
+| `--serial` | Open `TARGET` as a serial port (`-b`, `--data-bits`, `--parity`, `--stop-bits`, `--flow`). |
+| `--telnet` | Connect over Telnet. |
+| `--raw` | Open a raw TCP connection (requires `-p`). |
+| `--log <FILE>` | Save all session output to `FILE` (or a dated file inside a folder). |
 
 ```bash
 maelstromssh-tui user@example.com
 maelstromssh-tui --profile mybox
+maelstromssh-tui --serial /dev/ttyUSB0 -b 115200 --log ~/logs
+maelstromssh-tui --telnet 192.168.1.1
 ```
 
-Controls: type normally; `Ctrl+]` quits; mouse wheel / `Shift+PgUp`/`PgDn`
-scrolls back; window resize resizes the remote PTY.
+Controls: type normally; `Ctrl+]` quits; `F12` sends a break on serial and
+Telnet connections; mouse wheel / `Shift+PgUp`/`PgDn` scrolls back; window
+resize resizes the remote PTY (or Telnet NAWS).
 
 ---
 
@@ -363,14 +371,16 @@ maelstromssh-gui                      # opens the connect form
 maelstromssh-gui user@example.com
 maelstromssh-gui -i ~/.ssh/id_ed25519 git@github.com
 maelstromssh-gui --profile mybox
+maelstromssh-gui --serial /dev/ttyUSB0 -b 115200 --log ~/logs
 ```
 
-Without a `TARGET` or `--profile`, the window opens on a **connect form**. It has
-host (`user@host` or an ssh_config alias), port, an optional key file, the auth
-method, a saved-profile picker, and buttons for the `Host` aliases in
-`~/.ssh/config`. If the arguments don't resolve (e.g. an unknown profile),
-the form opens with the error shown. When a connection fails, **Change…**
-returns to the form, prefilled.
+Without a `TARGET` or `--profile`, the window opens on a **connect form**. Choose
+**SSH**, **Serial**, **Telnet**, or **Raw TCP** (or pick a saved profile),
+optionally tick **Save output** to log the session, and click **Connect**.
+Detected serial ports and `~/.ssh/config` aliases are offered as one-click
+buttons. While connected to a serial port or Telnet server, the status bar has
+a **Send break** button. When a connection fails, **Change…** returns to the
+form, prefilled.
 
 In-window controls:
 

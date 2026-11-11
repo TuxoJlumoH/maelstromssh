@@ -102,8 +102,9 @@ Debian/Fedora); add yourself with `sudo usermod -aG uucp $USER` and log in again
 
 ```bash
 maelstromssh-tui user@host
-maelstromssh-gui                     # opens a connect form
-maelstromssh-gui user@host
+maelstromssh-tui --serial /dev/ttyUSB0 -b 115200 --log ~/logs
+maelstromssh-gui                     # opens a connect form (SSH, Serial, Telnet, Raw TCP)
+maelstromssh-gui user@host --log ~/logs
 ```
 
 The desktop window asks for passwords, passphrases and host-key confirmation

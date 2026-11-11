@@ -3,11 +3,16 @@
 //! paints the grid + status bar. The SSH session lives on a background tokio
 //! task (see [`crate::ssh`]); this module is purely single-threaded.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Stroke};
-use maelstromssh_core::config::{ProfileStore, SshConfig};
+use maelstromssh_core::config::{
+    FlowControl, Parity, ProfileStore, Protocol, SerialSettings, SshConfig,
+};
 use maelstromssh_core::prompt::KiPrompt;
+use maelstromssh_core::serial::{self, PortInfo};
+use maelstromssh_core::session_log::SessionLog;
 use maelstromssh_core::target::{AuthChoice, Target, TargetArgs};
 use maelstromssh_core::term::Terminal;
 use tokio::sync::mpsc;
@@ -15,6 +20,15 @@ use tokio::sync::mpsc;
 use crate::keys::{self, KeyOut};
 use crate::paint::{self, Palette};
 use crate::ssh::{self, Cmd, Evt, Question};
+
+/// Startup arguments passed from `main`.
+#[derive(Clone)]
+pub struct LaunchArgs {
+    pub target: TargetArgs,
+    pub protocol: Protocol,
+    pub serial: SerialSettings,
+    pub log: Option<PathBuf>,
+}
 
 const ERROR_RED: Color32 = Color32::from_rgb(240, 80, 80);
 
@@ -90,8 +104,8 @@ enum Outcome {
 }
 
 /// The connect form's fields, plus the choices offered next to them.
-#[derive(Default)]
 struct ConnectForm {
+    protocol: Protocol,
     target: String,
     profile: Option<String>,
     port: String,
@@ -99,9 +113,43 @@ struct ConnectForm {
     jump: String,
     /// `None`: auto, or whatever the profile says.
     auth: Option<AuthChoice>,
+    serial_baud: String,
+    serial_data_bits: u8,
+    serial_parity: Parity,
+    serial_stop_bits: u8,
+    serial_flow: FlowControl,
+    log_enabled: bool,
+    log_path: String,
     error: Option<String>,
     profiles: Vec<String>,
     aliases: Vec<String>,
+    serial_ports: Vec<PortInfo>,
+}
+
+impl Default for ConnectForm {
+    fn default() -> Self {
+        let s = SerialSettings::default();
+        Self {
+            protocol: Protocol::Ssh,
+            target: String::new(),
+            profile: None,
+            port: String::new(),
+            identity: String::new(),
+            jump: String::new(),
+            auth: None,
+            serial_baud: s.baud.to_string(),
+            serial_data_bits: s.data_bits,
+            serial_parity: s.parity,
+            serial_stop_bits: s.stop_bits,
+            serial_flow: s.flow_control,
+            log_enabled: false,
+            log_path: String::new(),
+            error: None,
+            profiles: Vec::new(),
+            aliases: Vec::new(),
+            serial_ports: Vec::new(),
+        }
+    }
 }
 
 impl ConnectForm {
@@ -115,11 +163,16 @@ impl ConnectForm {
             Ok(config) => form.aliases = config.host_aliases(),
             Err(e) => form.error = Some(e.to_string()),
         }
+        if let Ok(ports) = serial::list_ports() {
+            form.serial_ports = ports;
+        }
         form
     }
 
-    fn from_args(args: &TargetArgs) -> Self {
+    fn from_launch(launch: &LaunchArgs) -> Self {
+        let args = &launch.target;
         let mut form = Self::new();
+        form.protocol = launch.protocol;
         form.target = args.target.clone().unwrap_or_default();
         form.profile = args.profile.clone().filter(|p| form.profiles.contains(p));
         form.port = args.port.map(|p| p.to_string()).unwrap_or_default();
@@ -130,38 +183,77 @@ impl ConnectForm {
             .unwrap_or_default();
         form.jump = args.jump.clone().unwrap_or_default();
         form.auth = args.auth;
+        form.serial_baud = launch.serial.baud.to_string();
+        form.serial_data_bits = launch.serial.data_bits;
+        form.serial_parity = launch.serial.parity;
+        form.serial_stop_bits = launch.serial.stop_bits;
+        form.serial_flow = launch.serial.flow_control;
+        if let Some(ref p) = launch.log {
+            form.log_enabled = true;
+            form.log_path = p.display().to_string();
+        }
         form
     }
 
     /// Prefills the form from the target that was just tried.
-    fn from_target(target: &Target, profile: Option<String>) -> Self {
+    fn from_target(
+        target: &Target,
+        profile: Option<String>,
+        log_spec: &Option<Option<PathBuf>>,
+    ) -> Self {
         let mut form = Self::new();
+        if let Some(inner) = log_spec {
+            form.log_enabled = true;
+            if let Some(p) = inner {
+                form.log_path = p.display().to_string();
+            }
+        }
         if profile.is_some() {
             form.profile = profile;
         } else {
-            form.target = format!("{}@{}", target.user, target.host);
-            if target.port != 22 {
-                form.port = target.port.to_string();
-            }
-            if !target.jump.is_empty() {
-                form.jump = target
-                    .jump
-                    .iter()
-                    .map(|j| {
-                        if j.port == 22 {
-                            format!("{}@{}", j.user, j.host)
-                        } else {
-                            format!("{}@{}:{}", j.user, j.host, j.port)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(",");
+            form.protocol = target.protocol;
+            match target.protocol {
+                Protocol::Ssh => {
+                    form.target = format!("{}@{}", target.user, target.host);
+                    if target.port != 22 {
+                        form.port = target.port.to_string();
+                    }
+                    if !target.jump.is_empty() {
+                        form.jump = target
+                            .jump
+                            .iter()
+                            .map(|j| {
+                                if j.port == 22 {
+                                    format!("{}@{}", j.user, j.host)
+                                } else {
+                                    format!("{}@{}:{}", j.user, j.host, j.port)
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(",");
+                    }
+                }
+                Protocol::Serial => {
+                    form.target = target.host.clone();
+                    let s = target.serial.unwrap_or_default();
+                    form.serial_baud = s.baud.to_string();
+                    form.serial_data_bits = s.data_bits;
+                    form.serial_parity = s.parity;
+                    form.serial_stop_bits = s.stop_bits;
+                    form.serial_flow = s.flow_control;
+                }
+                Protocol::Telnet | Protocol::Raw => {
+                    form.target = target.host.clone();
+                    if Some(target.port) != target.protocol.default_port() {
+                        form.port = target.port.to_string();
+                    }
+                }
             }
         }
         form
     }
 
-    fn args(&self) -> Result<TargetArgs, String> {
+    fn resolve(&self) -> Result<Target, String> {
         let port = match self.port.trim() {
             "" => None,
             p => Some(
@@ -171,20 +263,83 @@ impl ConnectForm {
                     .ok_or_else(|| format!("'{p}' is not a valid port"))?,
             ),
         };
-        let target = self.target.trim();
-        if self.profile.is_none() && target.is_empty() {
-            return Err("enter user@host, a host, or an ssh_config alias".into());
+        if self.profile.is_some() {
+            let identity = self.identity.trim();
+            let jump = self.jump.trim();
+            return TargetArgs {
+                target: None,
+                port,
+                identity: (!identity.is_empty()).then(|| identity.into()),
+                profile: self.profile.clone(),
+                auth: self.auth,
+                jump: (!jump.is_empty()).then(|| jump.to_string()),
+            }
+            .resolve_any()
+            .map_err(|e| e.to_string());
         }
-        let identity = self.identity.trim();
-        let jump = self.jump.trim();
-        Ok(TargetArgs {
-            target: self.profile.is_none().then(|| target.to_string()),
-            port,
-            identity: (!identity.is_empty()).then(|| identity.into()),
-            profile: self.profile.clone(),
-            auth: self.auth,
-            jump: (!jump.is_empty()).then(|| jump.to_string()),
-        })
+
+        let target = self.target.trim();
+        match self.protocol {
+            Protocol::Ssh => {
+                if target.is_empty() {
+                    return Err("enter user@host, a host, or an ssh_config alias".into());
+                }
+                let identity = self.identity.trim();
+                let jump = self.jump.trim();
+                TargetArgs {
+                    target: Some(target.to_string()),
+                    port,
+                    identity: (!identity.is_empty()).then(|| identity.into()),
+                    profile: None,
+                    auth: self.auth,
+                    jump: (!jump.is_empty()).then(|| jump.to_string()),
+                }
+                .resolve_any()
+                .map_err(|e| e.to_string())
+            }
+            Protocol::Serial => {
+                if target.is_empty() {
+                    return Err("enter a serial device path, e.g. /dev/ttyUSB0".into());
+                }
+                let baud = self
+                    .serial_baud
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|&b| b > 0)
+                    .ok_or_else(|| format!("'{}' is not a valid baud rate", self.serial_baud))?;
+                let settings = SerialSettings {
+                    baud,
+                    data_bits: self.serial_data_bits,
+                    parity: self.serial_parity,
+                    stop_bits: self.serial_stop_bits,
+                    flow_control: self.serial_flow,
+                };
+                settings.check().map_err(|e| e.to_string())?;
+                Ok(Target::serial(target, settings))
+            }
+            Protocol::Telnet | Protocol::Raw => {
+                if target.is_empty() {
+                    return Err("enter a host".into());
+                }
+                let resolved_port = port
+                    .or_else(|| self.protocol.default_port())
+                    .ok_or_else(|| "enter a port (1-65535)".to_string())?;
+                Ok(Target::tcp(self.protocol, target, resolved_port))
+            }
+        }
+    }
+
+    fn log_spec(&self) -> Option<Option<PathBuf>> {
+        if !self.log_enabled {
+            return None;
+        }
+        let trimmed = self.log_path.trim();
+        if trimmed.is_empty() {
+            Some(None)
+        } else {
+            Some(Some(PathBuf::from(trimmed)))
+        }
     }
 }
 
@@ -212,6 +367,9 @@ pub struct GuiApp {
     target: Option<Target>,
     /// The profile the target came from, to prefill the form again.
     profile: Option<String>,
+    /// `None`: logging off; `Some(None)`: default log dir; `Some(Some(p))`: explicit path.
+    log_spec: Option<Option<PathBuf>>,
+    log: Option<SessionLog>,
     term_type: String,
     handle: tokio::runtime::Handle,
     cmd_tx: Option<mpsc::UnboundedSender<Cmd>>,
@@ -236,26 +394,30 @@ pub struct GuiApp {
 }
 
 impl GuiApp {
-    /// Connects straight away when `args` name a target or profile;
+    /// Connects straight away when `launch` names a target or profile;
     /// otherwise (or if they don't resolve) starts on the connect form,
-    /// prefilled from `args`.
-    pub fn new(args: TargetArgs, term_type: String, handle: tokio::runtime::Handle) -> Self {
-        let profile = args.profile.clone();
-        let (target, state) = if args.target.is_some() || profile.is_some() {
-            match args.clone().resolve() {
+    /// prefilled from `launch`.
+    pub fn new(launch: LaunchArgs, term_type: String, handle: tokio::runtime::Handle) -> Self {
+        let profile = launch.target.profile.clone();
+        let form = ConnectForm::from_launch(&launch);
+        let log_spec = form.log_spec();
+        let (target, state) = if launch.target.target.is_some() || profile.is_some() {
+            match form.resolve() {
                 Ok(target) => (Some(target), State::Connecting),
                 Err(e) => {
-                    let mut form = ConnectForm::from_args(&args);
-                    form.error = Some(e.to_string());
+                    let mut form = form;
+                    form.error = Some(e);
                     (None, State::Setup(Box::new(form)))
                 }
             }
         } else {
-            (None, State::Setup(Box::new(ConnectForm::from_args(&args))))
+            (None, State::Setup(Box::new(form)))
         };
         Self {
             target,
             profile,
+            log_spec,
+            log: None,
             term_type,
             handle,
             cmd_tx: None,
@@ -281,6 +443,27 @@ impl GuiApp {
         let Some(target) = self.target.clone() else {
             return;
         };
+        self.log = match &self.log_spec {
+            None => None,
+            Some(Some(path)) => {
+                match SessionLog::create(path, &target.label(), &target.host, target.port) {
+                    Ok(l) => Some(l),
+                    Err(e) => {
+                        self.state = State::Failed(e.to_string());
+                        return;
+                    }
+                }
+            }
+            Some(None) => {
+                match SessionLog::create_default(&target.label(), &target.host, target.port) {
+                    Ok(l) => Some(l),
+                    Err(e) => {
+                        self.state = State::Failed(e.to_string());
+                        return;
+                    }
+                }
+            }
+        };
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (evt_tx, evt_rx) = mpsc::unbounded_channel();
         self.handle.spawn(ssh::connect_and_run(
@@ -299,11 +482,11 @@ impl GuiApp {
 
 impl eframe::App for GuiApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.evt_rx.is_none() && !matches!(self.state, State::Setup(_)) {
+        if self.evt_rx.is_none() && !matches!(self.state, State::Setup(_) | State::Failed(_)) {
             self.start_connect(ctx);
         }
 
-        // Drain SSH events, feeding output into the emulator and sending any
+        // Drain session events, feeding output into the emulator and sending any
         // terminal responses (cursor reports etc.) back.
         let mut responses: Vec<u8> = Vec::new();
         if let Some(rx) = self.evt_rx.as_mut() {
@@ -312,10 +495,19 @@ impl eframe::App for GuiApp {
                     Evt::Ask(q) => self.state = State::from_question(q),
                     Evt::Ready => self.state = State::Running,
                     Evt::Data(data) => {
+                        if let Some(log) = self.log.as_mut() {
+                            log.write(&data);
+                            if let Some(err) = log.take_error() {
+                                tracing::warn!("{err}");
+                            }
+                        }
                         self.term.feed(&data);
                         responses.extend(self.term.take_responses());
                     }
-                    Evt::Closed(msg) => self.state = State::Failed(msg),
+                    Evt::Closed(msg) => {
+                        self.log = None;
+                        self.state = State::Failed(msg);
+                    }
                 }
             }
         }
@@ -323,7 +515,7 @@ impl eframe::App for GuiApp {
             self.send_data(responses);
         }
 
-        // Steady redraw for cursor blink; the SSH task also pokes repaint.
+        // Steady redraw for cursor blink; the session task also pokes repaint.
         ctx.request_repaint_after(Duration::from_millis(16));
     }
 
@@ -382,62 +574,232 @@ impl GuiApp {
                     ui.end_row();
                 }
 
-                ui.label("Host");
-                let host = ui.add_enabled(
-                    form.profile.is_none(),
-                    egui::TextEdit::singleline(&mut form.target)
-                        .hint_text("user@host or ssh_config alias")
-                        .desired_width(280.0),
-                );
-                if form.profile.is_none() && !ui.memory(|m| m.focused().is_some()) {
-                    host.request_focus();
-                }
-                ui.end_row();
-
-                ui.label("Port");
-                ui.add(
-                    egui::TextEdit::singleline(&mut form.port)
-                        .hint_text("22")
-                        .desired_width(80.0),
-                );
-                ui.end_row();
-
-                ui.label("Key file");
-                ui.add(
-                    egui::TextEdit::singleline(&mut form.identity)
-                        .hint_text("optional, e.g. ~/.ssh/id_ed25519")
-                        .desired_width(280.0),
-                );
-                ui.end_row();
-
-                ui.label("Jump host");
-                ui.add(
-                    egui::TextEdit::singleline(&mut form.jump)
-                        .hint_text("optional, e.g. user@bastion:22")
-                        .desired_width(280.0),
-                );
-                ui.end_row();
-
-                ui.label("Authentication");
-                let is_profile = form.profile.is_some();
-                egui::ComboBox::from_id_salt("auth")
-                    .selected_text(auth_label(form.auth, is_profile))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut form.auth, None, auth_label(None, is_profile));
-                        for (choice, label) in AUTH_CHOICES.iter().skip(1) {
-                            ui.selectable_value(&mut form.auth, Some(*choice), *label);
-                        }
+                if form.profile.is_none() {
+                    ui.label("Protocol");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut form.protocol, Protocol::Ssh, "SSH");
+                        ui.radio_value(&mut form.protocol, Protocol::Serial, "Serial");
+                        ui.radio_value(&mut form.protocol, Protocol::Telnet, "Telnet");
+                        ui.radio_value(&mut form.protocol, Protocol::Raw, "Raw TCP");
                     });
+                    ui.end_row();
+                }
+
+                match form.protocol {
+                    Protocol::Serial if form.profile.is_none() => {
+                        ui.label("Device");
+                        let dev = ui.add(
+                            egui::TextEdit::singleline(&mut form.target)
+                                .hint_text("/dev/ttyUSB0")
+                                .desired_width(280.0),
+                        );
+                        if !ui.memory(|m| m.focused().is_some()) {
+                            dev.request_focus();
+                        }
+                        ui.end_row();
+
+                        ui.label("Baud rate");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut form.serial_baud)
+                                .hint_text("9600")
+                                .desired_width(100.0),
+                        );
+                        ui.end_row();
+
+                        ui.label("Line");
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_id_salt("data_bits")
+                                .selected_text(format!("{} data", form.serial_data_bits))
+                                .show_ui(ui, |ui| {
+                                    for b in [8u8, 7, 6, 5] {
+                                        ui.selectable_value(
+                                            &mut form.serial_data_bits,
+                                            b,
+                                            format!("{b} data"),
+                                        );
+                                    }
+                                });
+                            egui::ComboBox::from_id_salt("parity")
+                                .selected_text(match form.serial_parity {
+                                    Parity::None => "no parity",
+                                    Parity::Odd => "odd parity",
+                                    Parity::Even => "even parity",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut form.serial_parity,
+                                        Parity::None,
+                                        "no parity",
+                                    );
+                                    ui.selectable_value(
+                                        &mut form.serial_parity,
+                                        Parity::Even,
+                                        "even parity",
+                                    );
+                                    ui.selectable_value(
+                                        &mut form.serial_parity,
+                                        Parity::Odd,
+                                        "odd parity",
+                                    );
+                                });
+                            egui::ComboBox::from_id_salt("stop_bits")
+                                .selected_text(format!("{} stop", form.serial_stop_bits))
+                                .show_ui(ui, |ui| {
+                                    for s in [1u8, 2] {
+                                        ui.selectable_value(
+                                            &mut form.serial_stop_bits,
+                                            s,
+                                            format!("{s} stop"),
+                                        );
+                                    }
+                                });
+                            egui::ComboBox::from_id_salt("flow")
+                                .selected_text(match form.serial_flow {
+                                    FlowControl::None => "no flow ctrl",
+                                    FlowControl::Software => "XON/XOFF",
+                                    FlowControl::Hardware => "RTS/CTS",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut form.serial_flow,
+                                        FlowControl::None,
+                                        "no flow ctrl",
+                                    );
+                                    ui.selectable_value(
+                                        &mut form.serial_flow,
+                                        FlowControl::Software,
+                                        "XON/XOFF",
+                                    );
+                                    ui.selectable_value(
+                                        &mut form.serial_flow,
+                                        FlowControl::Hardware,
+                                        "RTS/CTS",
+                                    );
+                                });
+                        });
+                        ui.end_row();
+                    }
+                    Protocol::Telnet | Protocol::Raw if form.profile.is_none() => {
+                        ui.label("Host");
+                        let host = ui.add(
+                            egui::TextEdit::singleline(&mut form.target)
+                                .hint_text("host or IP address")
+                                .desired_width(280.0),
+                        );
+                        if !ui.memory(|m| m.focused().is_some()) {
+                            host.request_focus();
+                        }
+                        ui.end_row();
+
+                        ui.label("Port");
+                        let hint = if form.protocol == Protocol::Telnet {
+                            "23"
+                        } else {
+                            "1-65535"
+                        };
+                        ui.add(
+                            egui::TextEdit::singleline(&mut form.port)
+                                .hint_text(hint)
+                                .desired_width(80.0),
+                        );
+                        ui.end_row();
+                    }
+                    _ => {
+                        ui.label("Host");
+                        let host = ui.add_enabled(
+                            form.profile.is_none(),
+                            egui::TextEdit::singleline(&mut form.target)
+                                .hint_text("user@host or ssh_config alias")
+                                .desired_width(280.0),
+                        );
+                        if form.profile.is_none() && !ui.memory(|m| m.focused().is_some()) {
+                            host.request_focus();
+                        }
+                        ui.end_row();
+
+                        ui.label("Port");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut form.port)
+                                .hint_text("22")
+                                .desired_width(80.0),
+                        );
+                        ui.end_row();
+
+                        ui.label("Key file");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut form.identity)
+                                .hint_text("optional, e.g. ~/.ssh/id_ed25519")
+                                .desired_width(280.0),
+                        );
+                        ui.end_row();
+
+                        ui.label("Jump host");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut form.jump)
+                                .hint_text("optional, e.g. user@bastion:22")
+                                .desired_width(280.0),
+                        );
+                        ui.end_row();
+
+                        ui.label("Authentication");
+                        let is_profile = form.profile.is_some();
+                        egui::ComboBox::from_id_salt("auth")
+                            .selected_text(auth_label(form.auth, is_profile))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut form.auth,
+                                    None,
+                                    auth_label(None, is_profile),
+                                );
+                                for (choice, label) in AUTH_CHOICES.iter().skip(1) {
+                                    ui.selectable_value(&mut form.auth, Some(*choice), *label);
+                                }
+                            });
+                        ui.end_row();
+                    }
+                }
+
+                ui.label("Session log");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut form.log_enabled, "Save output");
+                    if form.log_enabled {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut form.log_path)
+                                .hint_text("optional path (blank = default log folder)")
+                                .desired_width(200.0),
+                        );
+                    }
+                });
                 ui.end_row();
             });
 
-        if form.profile.is_none() && !form.aliases.is_empty() {
+        if form.profile.is_none() && form.protocol == Protocol::Ssh && !form.aliases.is_empty() {
             ui.add_space(8.0);
             ui.label("Hosts from ~/.ssh/config:");
             ui.horizontal_wrapped(|ui| {
                 for alias in &form.aliases {
                     if ui.small_button(alias.as_str()).clicked() {
                         form.target = alias.clone();
+                    }
+                }
+            });
+        }
+
+        if form.profile.is_none()
+            && form.protocol == Protocol::Serial
+            && !form.serial_ports.is_empty()
+        {
+            ui.add_space(8.0);
+            ui.label("Detected serial ports:");
+            ui.horizontal_wrapped(|ui| {
+                for p in &form.serial_ports {
+                    let label = if p.description.is_empty() {
+                        p.path.clone()
+                    } else {
+                        format!("{} ({})", p.path, p.description)
+                    };
+                    if ui.small_button(label).clicked() {
+                        form.target = p.path.clone();
                     }
                 }
             });
@@ -457,15 +819,13 @@ impl GuiApp {
         if quit {
             self.quit = true;
         } else if submit {
-            let resolved = form
-                .args()
-                .and_then(|args| args.resolve().map_err(|e| e.to_string()));
-            match resolved {
+            match form.resolve() {
                 Ok(target) => {
                     for warning in &target.warnings {
                         tracing::warn!("{warning}");
                     }
                     self.profile = form.profile.clone();
+                    self.log_spec = form.log_spec();
                     self.target = Some(target);
                     self.start_connect(ui.ctx());
                 }
@@ -586,9 +946,10 @@ impl GuiApp {
             Outcome::Retry => self.start_connect(ui.ctx()),
             Outcome::Edit => {
                 let form = match &self.target {
-                    Some(t) => ConnectForm::from_target(t, self.profile.clone()),
+                    Some(t) => ConnectForm::from_target(t, self.profile.clone(), &self.log_spec),
                     None => ConnectForm::new(),
                 };
+                self.log = None;
                 self.cmd_tx = None;
                 self.evt_rx = None;
                 self.state = State::Setup(Box::new(form));
@@ -754,7 +1115,7 @@ impl GuiApp {
         Some((col, row))
     }
 
-    fn paint(&self, ui: &egui::Ui, status_rect: Rect) {
+    fn paint(&mut self, ui: &mut egui::Ui, status_rect: Rect) {
         let painter = ui.painter();
         painter.rect_filled(self.grid_rect, 0.0, self.palette.bg);
         let font = FontId::monospace(self.font_size);
@@ -829,7 +1190,7 @@ impl GuiApp {
         self.paint_status(ui, status_rect);
     }
 
-    fn paint_status(&self, ui: &egui::Ui, rect: Rect) {
+    fn paint_status(&mut self, ui: &mut egui::Ui, rect: Rect) {
         let painter = ui.painter();
         painter.rect_filled(rect, 0.0, Color32::from_rgb(30, 30, 36));
 
@@ -839,11 +1200,15 @@ impl GuiApp {
             .map(str::to_string)
             .or_else(|| self.target.as_ref().map(Target::label))
             .unwrap_or_default();
-        let status = if self.term.viewport_offset() > 0 {
-            format!("{label}    ↑ {} lines", self.term.viewport_offset())
-        } else {
-            format!("{label}    Ctrl+Shift+Q to quit")
-        };
+        let mut details = Vec::new();
+        if self.term.viewport_offset() > 0 {
+            details.push(format!("↑ {} lines", self.term.viewport_offset()));
+        }
+        if let Some(ref log) = self.log {
+            details.push(format!("Logging ({})", log.path().display()));
+        }
+        details.push("Ctrl+Shift+Q to quit".to_string());
+        let status = format!("{label}    {}", details.join("  ·  "));
         painter.text(
             pos2(rect.min.x + 6.0, rect.center().y),
             Align2::LEFT_CENTER,
@@ -851,6 +1216,30 @@ impl GuiApp {
             FontId::monospace(12.0),
             Color32::from_gray(180),
         );
+
+        let supports_break = matches!(
+            self.target.as_ref().map(|t| t.protocol),
+            Some(Protocol::Serial | Protocol::Telnet)
+        );
+        if supports_break {
+            let btn_rect = Rect::from_min_max(
+                pos2((rect.max.x - 100.0).max(rect.min.x), rect.min.y),
+                rect.max,
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(btn_rect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
+                    ui.add_space(6.0);
+                    if ui.small_button("Send break").clicked() {
+                        if let Some(tx) = &self.cmd_tx {
+                            let _ = tx.send(Cmd::Break);
+                        }
+                    }
+                },
+            );
+        }
     }
 }
 
