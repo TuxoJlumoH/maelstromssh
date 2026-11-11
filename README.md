@@ -31,9 +31,6 @@
 - **Full terminal emulator** — 256-color + truecolor, scrollback, reflow-on-resize, scroll regions, alternate screen, mouse reporting, bracketed paste.
 - **Profiles** — saved connection settings, including port forwards.
 
-> Formerly **VortexSSH**. Profiles and logs in the old `vortexssh` folders are moved
-> to the new ones automatically on first run.
-
 ## Screenshots
 
 | Full-screen apps (vim) | Port forwards | Serial port |
