@@ -12,7 +12,7 @@ env:
 
 jobs:
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -21,7 +21,7 @@ jobs:
       - run: cargo fmt --all --check
 
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -33,7 +33,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -42,23 +42,24 @@ jobs:
         run: .github/scripts/install-gui-deps.sh
       - run: cargo test --workspace --locked
 
+  # `cargo audit` instead of rustsec/audit-check: the action needs
+  # check-run write permissions and intermittently fails its GitHub API
+  # call ("Resource not accessible by integration" / "Not Found"),
+  # turning a clean audit into a red build.
   audit:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
-      checks: write
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v6
-      - uses: rustsec/audit-check@v1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - run: cargo audit
 
   # Lints the packaging files so a broken .desktop entry or Makefile
   # target is caught before a release.
   packaging:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v6
       - run: .github/scripts/install-desktop-utils.sh
