@@ -464,6 +464,7 @@ class Tab {
     $(".closed-banner", this.view)?.remove();
     const banner = el("div", { class: "closed-banner" },
       el("span", { class: "text", text: reason }),
+      reason.includes("known_hosts") ? el("button", { onclick: () => openKnownHosts() }, "Known hosts…") : null,
       serverLost ? null : el("button", { class: "primary", onclick: () => this.reconnect() }, "Reconnect"),
       el("button", { onclick: () => this.close() }, "Close tab"));
     $(".terminal-wrap", this.view).append(banner);
@@ -1034,11 +1035,49 @@ $("form", profileDialog).addEventListener("submit", async (e) => {
   }
 });
 
+// Known hosts dialog
+
+const knownHostsDialog = $("#known-hosts-dialog");
+
+async function loadKnownHosts() {
+  const error = $("#known-hosts-error");
+  error.hidden = true;
+  try {
+    const data = await api("GET", "/api/known-hosts");
+    $("#known-hosts-path").textContent = `Trusted server fingerprints in ${data.path}:`;
+    const tbody = $("#known-hosts-body");
+    tbody.replaceChildren(...data.entries.map((entry) => el("tr", {},
+      el("td", { text: entry.hosts }),
+      el("td", { class: "muted", text: entry.algorithm }),
+      el("td", { class: "mono small", text: entry.fingerprint }),
+      el("td", { class: "actions" },
+        el("button", { type: "button", class: "danger small", onclick: async () => {
+          try {
+            await api("DELETE", `/api/known-hosts/${entry.line}`);
+            await loadKnownHosts();
+          } catch (err) {
+            error.textContent = err.message;
+            error.hidden = false;
+          }
+        } }, "Forget")))));
+    $("#no-known-hosts").hidden = data.entries.length > 0;
+  } catch (err) {
+    error.textContent = err.message;
+    error.hidden = false;
+  }
+}
+
+function openKnownHosts() {
+  loadKnownHosts();
+  knownHostsDialog.showModal();
+}
+
 // ---------------------------------------------------------------------------
 
 $("#new-connection").addEventListener("click", openConnect);
 $("#welcome-connect").addEventListener("click", openConnect);
 $("#new-profile").addEventListener("click", () => editProfile(null));
+$("#known-hosts-btn").addEventListener("click", openKnownHosts);
 window.addEventListener("beforeunload", (e) => {
   if (tabs.some((t) => t.live)) e.preventDefault();
 });

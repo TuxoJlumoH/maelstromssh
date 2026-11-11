@@ -4,9 +4,14 @@
 
 mod auth;
 mod client;
+pub mod known_hosts;
 mod session;
 
 pub use client::{AcceptAll, ClientHandler, HostKeyVerifier, KnownHosts, ServerEvent};
+pub use known_hosts::{
+    default_known_hosts_path, list_known_hosts, remove_known_host, remove_known_host_line,
+    KnownHostEntry,
+};
 pub use session::{ClientHandle, Session};
 
 pub use russh::client::Msg;

@@ -137,6 +137,8 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/serial-ports", get(api::serial_ports))
         .route("/api/profiles", post(api::save_profile))
         .route("/api/profiles/{name}", delete(api::delete_profile))
+        .route("/api/known-hosts", get(api::known_hosts))
+        .route("/api/known-hosts/{line}", delete(api::delete_known_host))
         .route("/api/conn/{id}/download", post(api::download_ticket))
         .route(
             "/api/conn/{id}/upload",

@@ -127,6 +127,11 @@ enum Command {
         #[arg(short = 'b', long, default_value_t = 3072)]
         bits: usize,
     },
+    /// View or remove trusted server fingerprints in ~/.ssh/known_hosts.
+    KnownHosts {
+        #[command(subcommand)]
+        cmd: KnownHostsCmd,
+    },
 }
 
 const LINE_KEYS: &str = "While connected: Ctrl-] then q quits, Ctrl-] then b sends a break, \
@@ -211,6 +216,15 @@ enum ProfileCmd {
 enum KeyType {
     Ed25519,
     Rsa,
+}
+
+#[derive(Subcommand)]
+enum KnownHostsCmd {
+    /// List saved host key fingerprints in ~/.ssh/known_hosts.
+    List,
+    /// Remove a saved host key by host name (e.g. example.com or [host]:2222)
+    /// or 1-based line number.
+    Remove { target: String },
 }
 
 #[tokio::main]
@@ -309,6 +323,7 @@ async fn main() -> Result<()> {
             key_type,
             bits,
         } => keygen(output, &comment, key_type, bits),
+        Command::KnownHosts { cmd } => known_hosts_cmd(cmd),
     }
 }
 
@@ -338,7 +353,7 @@ async fn connect_session(target: &Target) -> Result<Session> {
         eprintln!("warning: {warning}");
     }
     let prompter = Arc::new(TtyPrompter);
-    Session::connect(
+    match Session::connect(
         &target.host,
         target.port,
         &target.user,
@@ -347,7 +362,15 @@ async fn connect_session(target: &Target) -> Result<Session> {
         Arc::new(KnownHosts { prompter }),
     )
     .await
-    .map_err(Into::into)
+    {
+        Ok(s) => Ok(s),
+        Err(e) => {
+            if let Some(hint) = e.hint() {
+                bail!("{e}\nhint: {hint}");
+            }
+            Err(e.into())
+        }
+    }
 }
 
 /// Opens the `--log` file, if one was asked for.
@@ -844,4 +867,46 @@ fn keygen(output: Option<PathBuf>, comment: &str, key_type: KeyType, bits: usize
     println!("Public key written to {}", pub_path.display());
     println!("Fingerprint: {}", public.fingerprint(HashAlg::Sha256));
     Ok(())
+}
+
+fn known_hosts_cmd(cmd: KnownHostsCmd) -> Result<()> {
+    use maelstromssh_core::ssh::{
+        default_known_hosts_path, list_known_hosts, remove_known_host, remove_known_host_line,
+    };
+
+    let path = default_known_hosts_path()?;
+    match cmd {
+        KnownHostsCmd::List => {
+            let entries = list_known_hosts(&path)?;
+            if entries.is_empty() {
+                println!("No entries in {}.", path.display());
+                return Ok(());
+            }
+            for e in entries {
+                println!(
+                    "{:>4}  {:<28} {:<19} {}",
+                    e.line, e.hosts, e.algorithm, e.fingerprint
+                );
+            }
+            Ok(())
+        }
+        KnownHostsCmd::Remove { target } => {
+            if let Ok(line) = target.parse::<usize>() {
+                if remove_known_host_line(&path, line)? {
+                    println!("Removed line {line} from {}", path.display());
+                    return Ok(());
+                }
+            }
+            let removed = remove_known_host(&path, &target)?;
+            if removed == 0 {
+                bail!("no matching entry for '{target}' in {}", path.display());
+            }
+            println!(
+                "Removed {removed} {} for '{target}' from {}",
+                if removed == 1 { "entry" } else { "entries" },
+                path.display()
+            );
+            Ok(())
+        }
+    }
 }

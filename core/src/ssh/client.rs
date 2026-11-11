@@ -64,7 +64,8 @@ impl HostKeyVerifier for KnownHosts {
                 reason: format!(
                     "the host key has CHANGED since it was saved in known_hosts (line {line}).\n\
                      Someone could be intercepting the connection, or the server was reinstalled.\n\
-                     If you trust the new key, remove the old one with: ssh-keygen -R '{}'",
+                     If you trust the new key, remove the old one with:\n\
+                     maelstromssh known-hosts remove '{}'",
                     host_label(host, port)
                 ),
             }),

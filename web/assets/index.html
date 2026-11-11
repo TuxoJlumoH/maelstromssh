@@ -32,6 +32,9 @@
     </section>
 
     <p id="host-errors" class="error small" hidden></p>
+    <div class="sidebar-foot">
+      <button id="known-hosts-btn" class="wide">Known hosts</button>
+    </div>
   </aside>
 
   <main id="main">
@@ -205,6 +208,24 @@
     <option value="9600"><option value="19200"><option value="38400"><option value="57600">
     <option value="115200"><option value="230400"><option value="460800"><option value="921600">
   </datalist>
+
+  <dialog id="known-hosts-dialog">
+    <form method="dialog" class="dialog-form">
+      <h2>Known hosts</h2>
+      <p id="known-hosts-path" class="muted small"></p>
+      <div class="known-hosts-wrap">
+        <table class="files known-hosts-table">
+          <thead><tr><th>Host</th><th>Key type</th><th>Fingerprint</th><th></th></tr></thead>
+          <tbody id="known-hosts-body"></tbody>
+        </table>
+        <p id="no-known-hosts" class="muted small" hidden>No trusted server keys saved yet.</p>
+      </div>
+      <p id="known-hosts-error" class="error small" hidden></p>
+      <div class="buttons">
+        <button value="close">Close</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="ask-dialog">
     <form method="dialog" class="dialog-form">

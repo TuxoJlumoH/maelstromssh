@@ -683,7 +683,12 @@ async fn run_session(
     };
     let mut session = match connected {
         Ok(s) => s,
-        Err(e) => return closed(e.to_string()),
+        Err(e) => {
+            if let Some(hint) = e.hint() {
+                send(&out, json!({ "type": "warning", "message": hint }));
+            }
+            return closed(e.to_string());
+        }
     };
     let shell = tokio::select! {
         r = session.open_shell(TERM_TYPE, cols, rows) => r,

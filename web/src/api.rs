@@ -266,6 +266,34 @@ pub async fn delete_profile(Path(name): Path<String>) -> ApiResult<StatusCode> {
     .await
 }
 
+/// `GET /api/known-hosts`: trusted server fingerprints in `~/.ssh/known_hosts`.
+pub async fn known_hosts() -> ApiResult<Json<Value>> {
+    blocking(|| {
+        let path = maelstromssh_core::ssh::default_known_hosts_path().map_err(server_error)?;
+        let entries = maelstromssh_core::ssh::list_known_hosts(&path).map_err(server_error)?;
+        Ok(Json(json!({
+            "path": maelstromssh_core::paths::collapse_home(&path),
+            "entries": entries,
+        })))
+    })
+    .await
+}
+
+/// `DELETE /api/known-hosts/{line}`: removes one 1-based line from `~/.ssh/known_hosts`.
+pub async fn delete_known_host(Path(line): Path<usize>) -> ApiResult<StatusCode> {
+    blocking(move || {
+        let path = maelstromssh_core::ssh::default_known_hosts_path().map_err(server_error)?;
+        let removed =
+            maelstromssh_core::ssh::remove_known_host_line(&path, line).map_err(server_error)?;
+        if removed {
+            Ok(StatusCode::NO_CONTENT)
+        } else {
+            Err((StatusCode::NOT_FOUND, "entry not found".into()))
+        }
+    })
+    .await
+}
+
 #[derive(Deserialize)]
 pub struct FilePath {
     path: String,

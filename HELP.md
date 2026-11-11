@@ -276,6 +276,15 @@ maelstromssh keygen -t rsa                        # rsa (3072) -> id_rsa
 maelstromssh keygen -t rsa -b 4096 -o ~/.ssh/id_rsa -c "me@host"
 ```
 
+### `known-hosts` — inspect and remove trusted server fingerprints
+
+```bash
+maelstromssh known-hosts list
+maelstromssh known-hosts remove example.com
+maelstromssh known-hosts remove "[example.com]:2222"
+maelstromssh known-hosts remove 12                # by 1-based line number
+```
+
 ### `sftp` — transfer files
 
 One-shot (scriptable) or interactive. Shares the `--port`/`--identity`/

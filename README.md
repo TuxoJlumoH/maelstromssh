@@ -43,7 +43,7 @@ All screenshots are of the web UI, taken against a test server with made-up host
 
 | Binary | What it is |
 |---|---|
-| `maelstromssh` | Command line — connect, `serial`, `telnet`, `raw`, `sftp`, `profile`, `keygen` |
+| `maelstromssh` | Command line — connect, `serial`, `telnet`, `raw`, `sftp`, `profile`, `keygen`, `known-hosts` |
 | `maelstromssh-tui` | Full-screen terminal UI (`ratatui`) |
 | `maelstromssh-gui` | Desktop window (`egui`/`eframe`) |
 | `maelstromssh-web` | Browser UI served on 127.0.0.1 (`axum` + `xterm.js`) |
@@ -64,8 +64,7 @@ All screenshots are of the web UI, taken against a test server with made-up host
   ```
 
   `make uninstall` (with the same `PREFIX`) removes it again.
-- **Arch / CachyOS**: `cd packaging/aur && makepkg -si` builds the tagged release. It clones
-  over SSH, so it needs your GitHub key while the repository is private.
+- **Arch / CachyOS**: `cd packaging/aur && makepkg -si` builds and installs the tagged release.
 - **Debian / Ubuntu**: download the `.deb` from the
   [releases page](https://github.com/TuxoJlumoH/maelstromssh/releases) and run
   `sudo apt install ./maelstromssh_*.deb`.
@@ -84,6 +83,8 @@ maelstromssh connect -L 8080:localhost:80 user@host  # local forward
 maelstromssh connect -D 1080 user@host               # SOCKS5 proxy
 maelstromssh sftp user@host                          # interactive SFTP shell
 maelstromssh keygen -t ed25519                       # generate a key
+maelstromssh known-hosts list                        # trusted server fingerprints
+maelstromssh known-hosts remove user-reinstalled-box # forget an old server key
 maelstromssh profile add mybox user@host -p 2222
 maelstromssh serial --list                           # serial ports on this machine
 maelstromssh serial /dev/ttyUSB0 -b 115200           # serial console (Ctrl-] q quits)
