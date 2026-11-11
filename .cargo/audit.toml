@@ -1,0 +1,6 @@
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: rsa v0.10.0-rc.18 Marvin timing sidechannel.
+    # rsa 0.10.0-rc.18 is vendored via ssh-key/russh upstream.
+    "RUSTSEC-2023-0071",
+]
