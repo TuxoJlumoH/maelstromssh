@@ -307,7 +307,7 @@ fn expand_tokens(raw: &str, t: &Tokens) -> Result<String> {
                 return Err(Error::Config(format!(
                     "unsupported token %{} in '{raw}'",
                     other.map(String::from).unwrap_or_default()
-                )))
+                )));
             }
         }
     }

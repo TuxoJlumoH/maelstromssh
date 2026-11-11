@@ -56,7 +56,7 @@ impl KeyFile {
                     return Err(Error::Config(format!(
                         "{shown} is an encrypted key in the old PEM format, which is not \
                          supported. Convert it with: ssh-keygen -p -f {shown}"
-                    )))
+                    )));
                 }
                 Err(e) => return Err(Error::Config(format!("cannot load key {shown}: {e}"))),
             },
@@ -362,10 +362,10 @@ impl<'a> Authenticator<'a> {
             .handle
             .authenticate_publickey_with(self.user, public, hash_alg, &mut signer)
             .await?;
-        if signer.skipped {
-            if let Some(entry) = self.tried.last_mut() {
-                entry.push_str(" (skipped)");
-            }
+        if signer.skipped
+            && let Some(entry) = self.tried.last_mut()
+        {
+            entry.push_str(" (skipped)");
         }
         Ok(self.record(result))
     }

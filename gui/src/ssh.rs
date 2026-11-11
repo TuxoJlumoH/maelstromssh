@@ -7,9 +7,9 @@
 //! [`Terminal`]: maelstromssh_core::term::Terminal
 
 use std::path::PathBuf;
-use std::sync::{mpsc as std_mpsc, Arc};
+use std::sync::{Arc, mpsc as std_mpsc};
 
-use maelstromssh_core::config::{forward_spec, parse_forward, ForwardKind, ForwardRule, Protocol};
+use maelstromssh_core::config::{ForwardKind, ForwardRule, Protocol, forward_spec, parse_forward};
 use maelstromssh_core::prompt::{KiPrompt, Prompter};
 use maelstromssh_core::serial;
 use maelstromssh_core::sftp::{self, DirEntry, SftpSession};
@@ -693,12 +693,12 @@ async fn run_tcp(
                     Cmd::Break => filter.brk(),
                     _ => None,
                 };
-                if let Some(bytes) = out {
-                    if writer.write_all(&bytes).await.is_err() || writer.flush().await.is_err() {
-                        let _ = evt_tx.send(Evt::Closed("writing socket failed".into()));
-                        notify.request_repaint();
-                        break;
-                    }
+                if let Some(bytes) = out
+                    && (writer.write_all(&bytes).await.is_err() || writer.flush().await.is_err())
+                {
+                    let _ = evt_tx.send(Evt::Closed("writing socket failed".into()));
+                    notify.request_repaint();
+                    break;
                 }
             }
         }

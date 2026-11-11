@@ -12,7 +12,7 @@ use anyhow::Result;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
-use maelstromssh_core::config::{forward_spec, parse_forward, ForwardKind, ForwardRule};
+use maelstromssh_core::config::{ForwardKind, ForwardRule, forward_spec, parse_forward};
 use maelstromssh_core::serial;
 use maelstromssh_core::session_log::SessionLog;
 use maelstromssh_core::sftp::{self, DirEntry, SftpSession};
@@ -20,18 +20,18 @@ use maelstromssh_core::ssh::{Channel, ChannelMsg, Msg, Session};
 use maelstromssh_core::tcp::{Filter, TcpLine};
 use maelstromssh_core::term::Terminal;
 use maelstromssh_core::tunnel::{ActiveForward, ForwardInfo, Forwarder};
+use ratatui::Terminal as RatuiTerminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, EventStream};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::Terminal as RatuiTerminal;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_stream::StreamExt;
 
-use crate::input::{encode_key, encode_sgr_mouse, scroll_action, ScrollAction};
+use crate::input::{ScrollAction, encode_key, encode_sgr_mouse, scroll_action};
 use crate::render::{FileRow, ForwardRow, GridView, OverlayTab, OverlayView, StatusBar};
 
 pub struct RunningForward {
@@ -196,10 +196,10 @@ impl Backend {
             }
             Backend::Serial(_) => {}
             Backend::Tcp(line) => {
-                if let Some(raw) = line.filter.resize(cols, rows) {
-                    if line.writer.write_all(&raw).await.is_ok() {
-                        line.writer.flush().await.ok();
-                    }
+                if let Some(raw) = line.filter.resize(cols, rows)
+                    && line.writer.write_all(&raw).await.is_ok()
+                {
+                    line.writer.flush().await.ok();
                 }
             }
         }
@@ -213,10 +213,10 @@ impl Backend {
                 let _ = tokio::task::spawn_blocking(move || breaker.send()).await;
             }
             Backend::Tcp(line) => {
-                if let Some(brk) = line.filter.brk() {
-                    if line.writer.write_all(&brk).await.is_ok() {
-                        line.writer.flush().await.ok();
-                    }
+                if let Some(brk) = line.filter.brk()
+                    && line.writer.write_all(&brk).await.is_ok()
+                {
+                    line.writer.flush().await.ok();
                 }
             }
         }
@@ -661,21 +661,22 @@ impl OverlayState {
                 }
             }
             KeyCode::Enter => {
-                if let Some(row) = self.files.get(self.file_selected) {
-                    if row.is_dir || row.is_parent {
-                        let next = self.join_remote(&row.name);
-                        self.load_dir(ssh, &next).await;
-                    }
+                if let Some(row) = self.files.get(self.file_selected)
+                    && (row.is_dir || row.is_parent)
+                {
+                    let next = self.join_remote(&row.name);
+                    self.load_dir(ssh, &next).await;
                 }
             }
             KeyCode::Char('d') => {
-                if let Some(row) = self.files.get(self.file_selected) {
-                    if !row.is_dir && !row.is_parent {
-                        self.prompt = Some(PromptMode::Download {
-                            remote_name: row.name.clone(),
-                            input: format!("./{}", row.name),
-                        });
-                    }
+                if let Some(row) = self.files.get(self.file_selected)
+                    && !row.is_dir
+                    && !row.is_parent
+                {
+                    self.prompt = Some(PromptMode::Download {
+                        remote_name: row.name.clone(),
+                        input: format!("./{}", row.name),
+                    });
                 }
             }
             KeyCode::Char('u') => {
@@ -689,24 +690,23 @@ impl OverlayState {
                 });
             }
             KeyCode::Char('r') => {
-                if let Some(row) = self.files.get(self.file_selected) {
-                    if !row.is_parent {
-                        self.prompt = Some(PromptMode::Rename {
-                            old_name: row.name.clone(),
-                            input: row.name.clone(),
-                        });
-                    }
+                if let Some(row) = self.files.get(self.file_selected)
+                    && !row.is_parent
+                {
+                    self.prompt = Some(PromptMode::Rename {
+                        old_name: row.name.clone(),
+                        input: row.name.clone(),
+                    });
                 }
             }
             KeyCode::Char('x') | KeyCode::Delete => {
-                if let Some(row) = self.files.get(self.file_selected) {
-                    if !row.is_parent {
-                        let name = row.name.clone();
-                        let is_dir = row.is_dir;
-                        self.status =
-                            Some((format!("Delete '{name}'? Press y to confirm."), false));
-                        self.prompt = Some(PromptMode::DeleteConfirm { name, is_dir });
-                    }
+                if let Some(row) = self.files.get(self.file_selected)
+                    && !row.is_parent
+                {
+                    let name = row.name.clone();
+                    let is_dir = row.is_dir;
+                    self.status = Some((format!("Delete '{name}'? Press y to confirm."), false));
+                    self.prompt = Some(PromptMode::DeleteConfirm { name, is_dir });
                 }
             }
             KeyCode::Char('g') => {
@@ -837,9 +837,9 @@ async fn event_loop(
     loop {
         tokio::select! {
             _ = redraw.tick() => {
-                let gen = term.generation();
-                if gen != last_gen || overlay_dirty {
-                    last_gen = gen;
+                let current_gen = term.generation();
+                if current_gen != last_gen || overlay_dirty {
+                    last_gen = current_gen;
                     overlay_dirty = false;
                     draw_frame(
                         terminal,
@@ -871,10 +871,11 @@ async fn event_loop(
                             }
                         } else if is_ssh && k.code == KeyCode::F(12) && k.modifiers.is_empty() {
                             overlay.open = true;
-                            if overlay.tab == OverlayTab::Files && overlay.sftp_path.is_empty() {
-                                if let Backend::Ssh(ssh) = backend {
-                                    overlay.load_dir(ssh, ".").await;
-                                }
+                            if overlay.tab == OverlayTab::Files
+                                && overlay.sftp_path.is_empty()
+                                && let Backend::Ssh(ssh) = backend
+                            {
+                                overlay.load_dir(ssh, ".").await;
                             }
                             overlay_dirty = true;
                         } else if can_break && k.code == KeyCode::F(12) && k.modifiers.is_empty() {

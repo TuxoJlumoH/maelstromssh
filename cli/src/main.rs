@@ -2,19 +2,19 @@ use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::terminal;
 use maelstromssh_core::config::{
-    parse_forward, AuthMethod, FlowControl, ForwardKind, ForwardRule, Parity, Profile,
-    ProfileStore, Protocol, SerialSettings,
+    AuthMethod, FlowControl, ForwardKind, ForwardRule, Parity, Profile, ProfileStore, Protocol,
+    SerialSettings, parse_forward,
 };
 use maelstromssh_core::prompt::TtyPrompter;
 use maelstromssh_core::serial;
 use maelstromssh_core::session_log::SessionLog;
 use maelstromssh_core::ssh::{ChannelMsg, KnownHosts, Session};
 use maelstromssh_core::target::{
-    auth_from_flags, local_user, split_target, AuthChoice, Target, TargetArgs,
+    AuthChoice, Target, TargetArgs, auth_from_flags, local_user, split_target,
 };
 use maelstromssh_core::tcp::{Filter, TcpLine};
 use maelstromssh_core::term::Terminal;
@@ -660,10 +660,10 @@ async fn pump_link_io(link: Link) -> Result<()> {
             }
             _ = resize::wait(&mut resize) => {
                 let (cols, rows) = terminal::size().unwrap_or((80, 24));
-                if let Some(msg) = filter.resize(cols, rows) {
-                    if tx.send(msg).await.is_err() {
-                        break;
-                    }
+                if let Some(msg) = filter.resize(cols, rows)
+                    && tx.send(msg).await.is_err()
+                {
+                    break;
                 }
             }
             done = &mut typing => {
@@ -680,7 +680,7 @@ async fn pump_link_io(link: Link) -> Result<()> {
 
 #[cfg(unix)]
 mod resize {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
 
     pub type Stream = tokio::signal::unix::Signal;
 
@@ -849,7 +849,7 @@ fn profile_rm(name: String) -> Result<()> {
 }
 
 fn keygen(output: Option<PathBuf>, comment: &str, key_type: KeyType, bits: usize) -> Result<()> {
-    use maelstromssh_core::keys::{generate, save_openssh, HashAlg, KeyKind};
+    use maelstromssh_core::keys::{HashAlg, KeyKind, generate, save_openssh};
 
     let output = output.unwrap_or_else(|| match key_type {
         KeyType::Ed25519 => PathBuf::from("id_ed25519"),
@@ -903,11 +903,11 @@ fn known_hosts_cmd(cmd: KnownHostsCmd) -> Result<()> {
             Ok(())
         }
         KnownHostsCmd::Remove { target } => {
-            if let Ok(line) = target.parse::<usize>() {
-                if remove_known_host_line(&path, line)? {
-                    println!("Removed line {line} from {}", path.display());
-                    return Ok(());
-                }
+            if let Ok(line) = target.parse::<usize>()
+                && remove_known_host_line(&path, line)?
+            {
+                println!("Removed line {line} from {}", path.display());
+                return Ok(());
             }
             let removed = remove_known_host(&path, &target)?;
             if removed == 0 {

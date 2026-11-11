@@ -1,7 +1,7 @@
+use russh::Channel;
 use russh::client::Msg;
 use russh::keys::known_hosts::learn_known_hosts;
-use russh::keys::{check_known_hosts, HashAlg, PublicKeyOrCertificate};
-use russh::Channel;
+use russh::keys::{HashAlg, PublicKeyOrCertificate, check_known_hosts};
 use std::sync::Arc;
 
 use tokio::sync::mpsc;

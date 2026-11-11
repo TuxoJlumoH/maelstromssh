@@ -124,11 +124,7 @@ pub fn indexed_rgb(n: u8) -> [u8; 3] {
 }
 
 fn cube(v: u8) -> u8 {
-    if v == 0 {
-        0
-    } else {
-        55 + v * 40
-    }
+    if v == 0 { 0 } else { 55 + v * 40 }
 }
 
 const BASE16: [[u8; 3]; 16] = [

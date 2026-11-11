@@ -2,8 +2,8 @@
 //! listing its identities. Signing happens during authentication in
 //! `ssh::Session::connect` (russh's `AgentClient` implements `auth::Signer`).
 
-use russh::keys::agent::client::AgentClient;
 use russh::keys::agent::AgentIdentity;
+use russh::keys::agent::client::AgentClient;
 
 use crate::error::Result;
 

@@ -28,10 +28,8 @@ pub fn encode(key: Key, mods: Modifiers, app_cursor: bool) -> KeyOut {
     }
 
     // Ctrl+letter/symbol -> control byte.
-    if ctrl {
-        if let Some(c) = key_char(key) {
-            return KeyOut::Bytes(vec![ctrl_byte(c)]);
-        }
+    if ctrl && let Some(c) = key_char(key) {
+        return KeyOut::Bytes(vec![ctrl_byte(c)]);
     }
 
     let seq: Vec<u8> = match key {
@@ -75,13 +73,11 @@ pub fn encode(key: Key, mods: Modifiers, app_cursor: bool) -> KeyOut {
         Key::F12 => tilde(24, mod_code(mods)),
         _ => {
             // Alt+<printable> -> ESC + character (uppercased with Shift).
-            if alt {
-                if let Some(c) = key_char(key) {
-                    let c = if shift { c.to_ascii_uppercase() } else { c };
-                    let mut out = vec![0x1b];
-                    out.extend_from_slice(&c.to_string().into_bytes());
-                    return KeyOut::Bytes(out);
-                }
+            if alt && let Some(c) = key_char(key) {
+                let c = if shift { c.to_ascii_uppercase() } else { c };
+                let mut out = vec![0x1b];
+                out.extend_from_slice(&c.to_string().into_bytes());
+                return KeyOut::Bytes(out);
             }
             return KeyOut::Ignore;
         }

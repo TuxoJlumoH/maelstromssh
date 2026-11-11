@@ -30,10 +30,10 @@ impl ProfileStore {
         for entry in std::fs::read_dir(&self.dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    names.push(stem.to_string());
-                }
+            if path.extension().and_then(|e| e.to_str()) == Some("toml")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                names.push(stem.to_string());
             }
         }
         names.sort();
@@ -181,9 +181,11 @@ mod tests {
         for good in ["prod-web-1", "db_2", "host.example.com"] {
             check_name(good).unwrap();
         }
-        assert!(ProfileStore::new("/nonexistent")
-            .load("../etc/passwd")
-            .is_err());
+        assert!(
+            ProfileStore::new("/nonexistent")
+                .load("../etc/passwd")
+                .is_err()
+        );
     }
 
     fn tempdir() -> PathBuf {

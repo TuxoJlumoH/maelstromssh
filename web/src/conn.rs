@@ -16,15 +16,15 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc as std_mpsc, Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, mpsc as std_mpsc};
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use maelstromssh_core::config::{
-    forward_spec, parse_forward, ForwardKind, ForwardRule, Protocol, SerialSettings,
+    ForwardKind, ForwardRule, Protocol, SerialSettings, forward_spec, parse_forward,
 };
 use maelstromssh_core::prompt::{KiPrompt, Prompter};
 use maelstromssh_core::serial::Line;
@@ -35,9 +35,9 @@ use maelstromssh_core::target::{Target, TargetArgs};
 use maelstromssh_core::tcp::TcpLine;
 use maelstromssh_core::tunnel::{ActiveForward, ForwardInfo, Forwarder};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, OnceCell};
+use tokio::sync::{OnceCell, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::App;
@@ -541,13 +541,12 @@ async fn run(app: Arc<App>, socket: WebSocket) {
     lock(&pending).take();
     drop(input_tx);
     cancel.cancel();
-    if let Some(task) = session_task {
-        if tokio::time::timeout(SHUTDOWN_TIMEOUT * 2, task)
+    if let Some(task) = session_task
+        && tokio::time::timeout(SHUTDOWN_TIMEOUT * 2, task)
             .await
             .is_err()
-        {
-            tracing::warn!("a session did not shut down in time");
-        }
+    {
+        tracing::warn!("a session did not shut down in time");
     }
     writer.abort();
 }

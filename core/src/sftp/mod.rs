@@ -10,10 +10,10 @@ use std::path::Path;
 use crate::error::{Error, Result};
 use crate::ssh::Session;
 
+pub use russh_sftp::client::SftpSession;
 /// Re-exported so front-ends can name the session type without depending on
 /// `russh_sftp` directly.
 pub use russh_sftp::client::fs::File;
-pub use russh_sftp::client::SftpSession;
 
 /// A single read buffer for streaming transfers.
 const BUF_SIZE: usize = 64 * 1024;

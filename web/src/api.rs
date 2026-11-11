@@ -4,20 +4,20 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use futures_util::TryStreamExt;
 use maelstromssh_core::config::{
-    check_profile_name, parse_forward, AuthMethod, ForwardKind, Profile, ProfileStore, Protocol,
-    SerialSettings, Snippet, SnippetStore, SshConfig,
+    AuthMethod, ForwardKind, Profile, ProfileStore, Protocol, SerialSettings, Snippet,
+    SnippetStore, SshConfig, check_profile_name, parse_forward,
 };
 use maelstromssh_core::sftp;
 use maelstromssh_core::target::{local_user, split_target};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::{ReaderStream, StreamReader};
 
@@ -328,7 +328,7 @@ pub struct GenerateKeyForm {
 /// `POST /api/keys`: generates a new keypair in `~/.ssh`.
 pub async fn generate_ssh_key(Json(form): Json<GenerateKeyForm>) -> ApiResult<Json<Value>> {
     blocking(move || {
-        use maelstromssh_core::keys::{default_ssh_dir, generate_in_dir, KeyKind};
+        use maelstromssh_core::keys::{KeyKind, default_ssh_dir, generate_in_dir};
         let dir = default_ssh_dir().map_err(server_error)?;
         let kind = match form.kind.as_str() {
             "" | "ed25519" => KeyKind::Ed25519,

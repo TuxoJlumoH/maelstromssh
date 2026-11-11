@@ -6,10 +6,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Stroke};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, pos2, vec2};
 use maelstromssh_core::config::{
-    forward_spec, parse_forward, FlowControl, ForwardKind, ForwardRule, Parity, ProfileStore,
-    Protocol, SerialSettings, SshConfig,
+    FlowControl, ForwardKind, ForwardRule, Parity, ProfileStore, Protocol, SerialSettings,
+    SshConfig, forward_spec, parse_forward,
 };
 use maelstromssh_core::prompt::KiPrompt;
 use maelstromssh_core::serial::{self, PortInfo};
@@ -1243,53 +1243,53 @@ impl GuiApp {
                         }
                     });
 
-                if let Some(next_dir) = cd_into {
-                    if let Some(tx) = &self.cmd_tx {
-                        let _ = tx.send(Cmd::SftpList { path: next_dir });
-                    }
+                if let Some(next_dir) = cd_into
+                    && let Some(tx) = &self.cmd_tx
+                {
+                    let _ = tx.send(Cmd::SftpList { path: next_dir });
                 }
 
                 ui.separator();
 
                 // Selected entry actions
-                if let Some(sel_idx) = self.sftp_selected {
-                    if let Some(entry) = self.sftp_entries.get(sel_idx).cloned() {
-                        ui.horizontal(|ui| {
-                            ui.strong(format!("Selected: {}", entry.name));
-                            if entry.is_dir && ui.button("Open folder").clicked() {
-                                let next = self.join_remote(&entry.name);
+                if let Some(sel_idx) = self.sftp_selected
+                    && let Some(entry) = self.sftp_entries.get(sel_idx).cloned()
+                {
+                    ui.horizontal(|ui| {
+                        ui.strong(format!("Selected: {}", entry.name));
+                        if entry.is_dir && ui.button("Open folder").clicked() {
+                            let next = self.join_remote(&entry.name);
+                            if let Some(tx) = &self.cmd_tx {
+                                let _ = tx.send(Cmd::SftpList { path: next });
+                            }
+                        }
+                        if ui.button("Delete").clicked() {
+                            let full = self.join_remote(&entry.name);
+                            if let Some(tx) = &self.cmd_tx {
+                                let _ = tx.send(Cmd::SftpRemove {
+                                    path: full,
+                                    is_dir: entry.is_dir,
+                                });
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Rename to:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.sftp_rename_to)
+                                .desired_width(180.0),
+                        );
+                        if ui.button("Rename").clicked() {
+                            let new_name = self.sftp_rename_to.trim();
+                            if !new_name.is_empty() && new_name != entry.name {
+                                let from = self.join_remote(&entry.name);
+                                let to = self.join_remote(new_name);
                                 if let Some(tx) = &self.cmd_tx {
-                                    let _ = tx.send(Cmd::SftpList { path: next });
+                                    let _ = tx.send(Cmd::SftpRename { from, to });
                                 }
                             }
-                            if ui.button("Delete").clicked() {
-                                let full = self.join_remote(&entry.name);
-                                if let Some(tx) = &self.cmd_tx {
-                                    let _ = tx.send(Cmd::SftpRemove {
-                                        path: full,
-                                        is_dir: entry.is_dir,
-                                    });
-                                }
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Rename to:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.sftp_rename_to)
-                                    .desired_width(180.0),
-                            );
-                            if ui.button("Rename").clicked() {
-                                let new_name = self.sftp_rename_to.trim();
-                                if !new_name.is_empty() && new_name != entry.name {
-                                    let from = self.join_remote(&entry.name);
-                                    let to = self.join_remote(new_name);
-                                    if let Some(tx) = &self.cmd_tx {
-                                        let _ = tx.send(Cmd::SftpRename { from, to });
-                                    }
-                                }
-                            }
-                        });
-                    }
+                        }
+                    });
                 }
 
                 ui.horizontal(|ui| {
@@ -1306,19 +1306,17 @@ impl GuiApp {
                     if ui
                         .add_enabled(can_download, egui::Button::new("Download selected"))
                         .clicked()
-                    {
-                        if let Some(entry) =
+                        && let Some(entry) =
                             self.sftp_selected.and_then(|i| self.sftp_entries.get(i))
-                        {
-                            let local = if self.sftp_local_path.trim().is_empty() {
-                                PathBuf::from(&entry.name)
-                            } else {
-                                PathBuf::from(self.sftp_local_path.trim())
-                            };
-                            let remote = self.join_remote(&entry.name);
-                            if let Some(tx) = &self.cmd_tx {
-                                let _ = tx.send(Cmd::SftpDownload { remote, local });
-                            }
+                    {
+                        let local = if self.sftp_local_path.trim().is_empty() {
+                            PathBuf::from(&entry.name)
+                        } else {
+                            PathBuf::from(self.sftp_local_path.trim())
+                        };
+                        let remote = self.join_remote(&entry.name);
+                        if let Some(tx) = &self.cmd_tx {
+                            let _ = tx.send(Cmd::SftpDownload { remote, local });
                         }
                     }
                     if ui.button("Upload to current dir").clicked() {
@@ -1445,10 +1443,10 @@ impl GuiApp {
                         }
                     });
 
-                if let Some(id) = to_stop {
-                    if let Some(tx) = &self.cmd_tx {
-                        let _ = tx.send(Cmd::ForwardStop { id });
-                    }
+                if let Some(id) = to_stop
+                    && let Some(tx) = &self.cmd_tx
+                {
+                    let _ = tx.send(Cmd::ForwardStop { id });
                 }
 
                 if let Some((ref msg, is_err)) = self.forward_status {
@@ -1715,21 +1713,20 @@ impl GuiApp {
                         }
                         if ui.small_button("Files (SFTP)").clicked() {
                             self.show_sftp = !self.show_sftp;
-                            if self.show_sftp && self.sftp_path.is_empty() {
-                                if let Some(tx) = &self.cmd_tx {
-                                    let _ = tx.send(Cmd::SftpList {
-                                        path: ".".to_string(),
-                                    });
-                                }
+                            if self.show_sftp
+                                && self.sftp_path.is_empty()
+                                && let Some(tx) = &self.cmd_tx
+                            {
+                                let _ = tx.send(Cmd::SftpList {
+                                    path: ".".to_string(),
+                                });
                             }
                         }
                     }
                     Some(Protocol::Serial | Protocol::Telnet) => {
                         let clicked = ui.small_button("Send break").clicked();
-                        if clicked {
-                            if let Some(tx) = &self.cmd_tx {
-                                let _ = tx.send(Cmd::Break);
-                            }
+                        if clicked && let Some(tx) = &self.cmd_tx {
+                            let _ = tx.send(Cmd::Break);
                         }
                     }
                     _ => {}

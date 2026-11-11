@@ -4,14 +4,14 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use maelstromssh_core::Error;
 use maelstromssh_core::config::AuthMethod;
-use maelstromssh_core::keys::{generate, save_openssh, KeyKind};
+use maelstromssh_core::keys::{KeyKind, generate, save_openssh};
 use maelstromssh_core::prompt::{KiPrompt, Prompter};
 use maelstromssh_core::ssh::{AcceptAll, Session};
-use maelstromssh_core::Error;
+use russh::MethodKind;
 use russh::keys::PublicKey;
 use russh::server::{self, Auth, Response};
-use russh::MethodKind;
 use tokio::net::TcpListener;
 
 const PASSWORD: &str = "hunter2";

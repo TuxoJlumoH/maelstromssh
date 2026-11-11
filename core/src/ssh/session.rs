@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use russh::client::{self, Handle, Msg};
 use russh::Channel;
+use russh::client::{self, Handle, Msg};
 use tokio::sync::mpsc;
 
 use crate::config::AuthMethod;

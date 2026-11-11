@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use egui::{IconData, ViewportBuilder};
 use maelstromssh_core::config::{FlowControl, Parity, Protocol, SerialSettings};

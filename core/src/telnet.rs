@@ -280,7 +280,9 @@ mod tests {
         let mut t = Telnet::new("xterm-256color", 80, 24);
         assert_eq!(
             t.start(),
-            [IAC, WILL, NAWS, IAC, WILL, TTYPE, IAC, DO, ECHO, IAC, DO, SGA]
+            [
+                IAC, WILL, NAWS, IAC, WILL, TTYPE, IAC, DO, ECHO, IAC, DO, SGA
+            ]
         );
     }
 

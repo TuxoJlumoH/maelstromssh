@@ -6,14 +6,14 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::body::{to_bytes, Body};
-use axum::http::{header, Method, Request, StatusCode};
+use axum::body::{Body, to_bytes};
+use axum::http::{Method, Request, StatusCode, header};
 use axum::response::Response;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::api::Ticket;
-use crate::{router, App};
+use crate::{App, router};
 
 const PORT: u16 = 18999;
 const HOST: &str = "127.0.0.1:18999";
@@ -317,10 +317,12 @@ async fn assets_are_served_and_nothing_else() {
         ))
         .await;
         assert_eq!(r.status(), StatusCode::OK, "{file}");
-        assert!(r.headers()[header::CONTENT_TYPE]
-            .to_str()
-            .unwrap()
-            .starts_with(mime));
+        assert!(
+            r.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with(mime)
+        );
     }
     for file in ["index.html", "..%2FCargo.toml", "%2E%2E", "missing.js"] {
         let r = send(request(
@@ -345,8 +347,12 @@ async fn profiles_and_hosts() {
         "Host alpha\n  HostName 10.0.0.1\nHost *.wild\n  User x\nHost beta gamma\n  Port 2200\n",
     )
     .unwrap();
-    std::env::set_var("HOME", home.path());
-    std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+    // SAFETY: In Rust 2024 / newer rustc, modifying environment variables is marked unsafe.
+    // This integration test runs isolated within this process.
+    unsafe {
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+    }
     let profiles_dir = home.path().join(".config/maelstromssh/profiles");
 
     let app = app();

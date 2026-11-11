@@ -14,4 +14,4 @@ pub use profile::{
 };
 pub use snippets::{Snippet, SnippetStore};
 pub use ssh_config::{HostConfig, SshConfig};
-pub use store::{check_name as check_profile_name, ProfileStore};
+pub use store::{ProfileStore, check_name as check_profile_name};

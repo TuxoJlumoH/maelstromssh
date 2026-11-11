@@ -145,11 +145,11 @@ impl Terminal {
         };
         self.alt_grid
             .resize(cols, rows, &mut inactive_cursor, self.alt_active);
-        if self.alt_active {
-            if let Some(s) = &mut self.saved {
-                s.row = inactive_cursor.0;
-                s.col = inactive_cursor.1;
-            }
+        if self.alt_active
+            && let Some(s) = &mut self.saved
+        {
+            s.row = inactive_cursor.0;
+            s.col = inactive_cursor.1;
         }
         self.cursor_row = cursor.0.min(rows - 1);
         self.cursor_col = cursor.1.min(cols - 1);
@@ -732,9 +732,9 @@ impl Perform for Terminal {
                 // RIS: full reset, keeping dimensions and scrollback bound.
                 let cols = self.grid.cols();
                 let rows = self.grid.rows();
-                let gen = self.generation;
+                let current_gen = self.generation;
                 *self = Self::with_scrollback(cols, rows, DEFAULT_SCROLLBACK);
-                self.generation = gen + 1;
+                self.generation = current_gen + 1;
             }
             b'=' => self.application_keypad = true,
             b'>' => self.application_keypad = false,

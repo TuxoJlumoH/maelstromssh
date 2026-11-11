@@ -29,7 +29,7 @@ pub async fn connect(host: &str, port: u16, service: &str) -> Result<TcpStream> 
             return Err(fail(format!(
                 "no response after {}s",
                 CONNECT_TIMEOUT.as_secs()
-            )))
+            )));
         }
         Ok(Err(e)) => {
             let reason = match e.kind() {

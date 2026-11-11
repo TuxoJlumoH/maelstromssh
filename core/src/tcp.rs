@@ -36,7 +36,7 @@ impl TcpLine {
                 return Err(Error::Config(format!(
                     "{} is not a TCP protocol",
                     other.name()
-                )))
+                )));
             }
         };
         if port == 0 {

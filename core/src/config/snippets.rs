@@ -144,16 +144,18 @@ mod tests {
         assert_eq!(list.len(), 1);
 
         // Duplicate name without original_name fails.
-        assert!(store
-            .save(
-                Snippet {
-                    name: "docker-ps".into(),
-                    command: "docker ps".into(),
-                    run: true,
-                },
-                None,
-            )
-            .is_err());
+        assert!(
+            store
+                .save(
+                    Snippet {
+                        name: "docker-ps".into(),
+                        command: "docker ps".into(),
+                        run: true,
+                    },
+                    None,
+                )
+                .is_err()
+        );
 
         // Rename and update.
         let list = store

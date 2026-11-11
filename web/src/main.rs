@@ -14,10 +14,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::routing::{delete, get, post, put};
-use axum::{middleware, Router};
+use axum::{Router, middleware};
 use clap::Parser;
 use tokio::net::TcpListener;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
 
 mod api;

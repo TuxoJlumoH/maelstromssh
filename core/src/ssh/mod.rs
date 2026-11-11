@@ -9,8 +9,8 @@ mod session;
 
 pub use client::{AcceptAll, ClientHandler, HostKeyVerifier, KnownHosts, ServerEvent};
 pub use known_hosts::{
-    default_known_hosts_path, list_known_hosts, remove_known_host, remove_known_host_line,
-    KnownHostEntry,
+    KnownHostEntry, default_known_hosts_path, list_known_hosts, remove_known_host,
+    remove_known_host_line,
 };
 pub use session::{ClientHandle, Session};
 

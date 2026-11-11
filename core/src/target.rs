@@ -196,10 +196,10 @@ impl TargetArgs {
             match p.protocol {
                 Protocol::Ssh => {}
                 Protocol::Serial => {
-                    return Ok(Target::serial(p.host, p.serial.unwrap_or_default()))
+                    return Ok(Target::serial(p.host, p.serial.unwrap_or_default()));
                 }
                 Protocol::Telnet | Protocol::Raw => {
-                    return Ok(Target::tcp(p.protocol, p.host, self.port.unwrap_or(p.port)))
+                    return Ok(Target::tcp(p.protocol, p.host, self.port.unwrap_or(p.port)));
                 }
             }
             let auth = match self.auth {
@@ -324,37 +324,37 @@ fn resolve_jump_specs(
             continue;
         }
         let (user, host, port) = parse_jump_endpoint(spec)?;
-        if user.is_none() && port.is_none() {
-            if let Ok(prof) = store.load(&host) {
-                if prof.protocol == Protocol::Ssh {
-                    if let Some(ref pj) = prof.proxy_jump {
-                        let nested: Vec<String> = pj
-                            .split(',')
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_string)
-                            .collect();
-                        out.extend(resolve_jump_specs(
-                            &nested,
-                            store,
-                            ssh_config,
-                            cli_identity,
-                            warnings,
-                            depth + 1,
-                        )?);
-                    }
-                    out.push(JumpHost {
-                        host: prof.host,
-                        port: prof.port,
-                        user: prof.user,
-                        auth: prof.auth,
-                    });
-                    if out.len() > MAX_JUMP_HOPS {
-                        return Err(Error::Config("too many ProxyJump hops".into()));
-                    }
-                    continue;
-                }
+        if user.is_none()
+            && port.is_none()
+            && let Ok(prof) = store.load(&host)
+            && prof.protocol == Protocol::Ssh
+        {
+            if let Some(ref pj) = prof.proxy_jump {
+                let nested: Vec<String> = pj
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                out.extend(resolve_jump_specs(
+                    &nested,
+                    store,
+                    ssh_config,
+                    cli_identity,
+                    warnings,
+                    depth + 1,
+                )?);
             }
+            out.push(JumpHost {
+                host: prof.host,
+                port: prof.port,
+                user: prof.user,
+                auth: prof.auth,
+            });
+            if out.len() > MAX_JUMP_HOPS {
+                return Err(Error::Config("too many ProxyJump hops".into()));
+            }
+            continue;
         }
 
         let cfg = ssh_config.lookup(&host, user.as_deref())?;
@@ -377,10 +377,10 @@ fn resolve_jump_specs(
             )?);
         }
         let mut auth = auth_with_config(None, &cfg)?;
-        if let (Some(id), AuthMethod::Auto { identities }) = (cli_identity, &mut auth) {
-            if !identities.iter().any(|existing| existing == id) {
-                identities.push(id.to_string());
-            }
+        if let (Some(id), AuthMethod::Auto { identities }) = (cli_identity, &mut auth)
+            && !identities.iter().any(|existing| existing == id)
+        {
+            identities.push(id.to_string());
         }
         out.push(JumpHost {
             host: cfg.hostname.unwrap_or(host),
@@ -400,12 +400,12 @@ pub fn parse_jump_endpoint(spec: &str) -> Result<(Option<String>, String, Option
     let trimmed = spec.trim();
     let without_scheme = trimmed.strip_prefix("ssh://").unwrap_or(trimmed);
     let (user, host_port) = split_target(without_scheme);
-    if let Some(user_str) = &user {
-        if user_str.is_empty() {
-            return Err(Error::Config(format!(
-                "missing user before '@' in jump host '{spec}'"
-            )));
-        }
+    if let Some(user_str) = &user
+        && user_str.is_empty()
+    {
+        return Err(Error::Config(format!(
+            "missing user before '@' in jump host '{spec}'"
+        )));
     }
     let (host, port) = if let Some(rest) = host_port.strip_prefix('[') {
         let Some((ipv6, after)) = rest.split_once(']') else {
@@ -524,9 +524,11 @@ mod tests {
 
     #[test]
     fn missing_target_is_an_error() {
-        assert!(TargetArgs::default()
-            .resolve_with(&ProfileStore::new("/nonexistent"), &SshConfig::default())
-            .is_err());
+        assert!(
+            TargetArgs::default()
+                .resolve_with(&ProfileStore::new("/nonexistent"), &SshConfig::default())
+                .is_err()
+        );
     }
 
     #[test]

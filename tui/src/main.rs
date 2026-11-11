@@ -12,10 +12,10 @@ mod render;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use maelstromssh_core::config::{
-    parse_forward, FlowControl, ForwardKind, ForwardRule, Parity, Protocol, SerialSettings,
+    FlowControl, ForwardKind, ForwardRule, Parity, Protocol, SerialSettings, parse_forward,
 };
 use maelstromssh_core::prompt::TtyPrompter;
 use maelstromssh_core::serial;
