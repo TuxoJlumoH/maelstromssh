@@ -44,6 +44,11 @@ jobs:
 
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      checks: write
     steps:
       - uses: actions/checkout@v6
       - uses: rustsec/audit-check@v1
