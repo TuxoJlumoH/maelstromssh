@@ -21,14 +21,16 @@ pub struct HostConfig {
     pub port: Option<u16>,
     /// Paths with `~` and `%` tokens already expanded, in config order.
     pub identity_files: Vec<String>,
+    /// Jump hosts from `ProxyJump` (empty when unset or `ProxyJump none`).
+    pub proxy_jump: Vec<String>,
     /// Keywords that change how to connect but are not supported (e.g.
-    /// `ProxyJump`), so the user can be warned.
+    /// `ProxyCommand`), so the user can be warned.
     pub unsupported: Vec<String>,
 }
 
 /// Keywords whose absence would make the connection go somewhere else or
 /// fail in a confusing way.
-const UNSUPPORTED: [&str; 3] = ["proxyjump", "proxycommand", "certificatefile"];
+const UNSUPPORTED: [&str; 2] = ["proxycommand", "certificatefile"];
 
 #[derive(Debug, Clone)]
 enum Condition {
@@ -132,6 +134,7 @@ impl SshConfig {
             local_user: local_user(),
             out: HostConfig::default(),
             identity_raw: Vec::new(),
+            proxy_jump_seen: false,
         };
         let mut active = true;
         state.walk(&self.items, &mut active)?;
@@ -183,6 +186,7 @@ struct Lookup<'a> {
     local_user: String,
     out: HostConfig,
     identity_raw: Vec<String>,
+    proxy_jump_seen: bool,
 }
 
 impl Lookup<'_> {
@@ -246,6 +250,17 @@ impl Lookup<'_> {
             "identityfile" if !value.eq_ignore_ascii_case("none") => {
                 if !self.identity_raw.iter().any(|v| v == value) {
                     self.identity_raw.push(value.to_string());
+                }
+            }
+            "proxyjump" if !self.proxy_jump_seen => {
+                self.proxy_jump_seen = true;
+                if !value.eq_ignore_ascii_case("none") {
+                    self.out.proxy_jump = value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect();
                 }
             }
             k if UNSUPPORTED.contains(&k) && !value.eq_ignore_ascii_case("none") => {
@@ -388,8 +403,13 @@ fn parse(text: &str, name: &str, base: &Path, depth: usize) -> Result<Vec<Item>>
                 items.push(Item::Include(inner));
             }
             _ => {
-                let Some(value) = args.into_iter().next() else {
+                if args.is_empty() {
                     return Err(bad(&format!("missing value for '{key}'")));
+                }
+                let value = if key == "proxyjump" {
+                    args.join(",")
+                } else {
+                    args.into_iter().next().unwrap()
                 };
                 items.push(Item::Setting {
                     key,
@@ -593,13 +613,19 @@ mod tests {
     }
 
     #[test]
-    fn reports_unsupported_keywords() {
-        let c = cfg("Host a\n  ProxyJump bastion\nHost b\n  ProxyJump none");
-        assert_eq!(
-            c.lookup("a", None).unwrap().unsupported,
-            ["config:2: proxyjump"]
+    fn reports_unsupported_keywords_and_parses_proxyjump() {
+        let c = cfg(
+            "Host a\n  ProxyJump ops@bastion1:2222, bastion2\n  ProxyCommand ssh -W %h:%p x\n\
+             Host b\n  ProxyJump none\nHost *\n  ProxyJump fallback",
         );
-        assert!(c.lookup("b", None).unwrap().unsupported.is_empty());
+        let a = c.lookup("a", None).unwrap();
+        assert_eq!(a.proxy_jump, ["ops@bastion1:2222", "bastion2"]);
+        assert_eq!(a.unsupported, ["config:3: proxycommand"]);
+
+        // `ProxyJump none` prevents a later wildcard `ProxyJump` from applying.
+        let b = c.lookup("b", None).unwrap();
+        assert!(b.proxy_jump.is_empty());
+        assert!(b.unsupported.is_empty());
     }
 
     #[test]

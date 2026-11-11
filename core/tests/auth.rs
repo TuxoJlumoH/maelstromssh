@@ -74,6 +74,28 @@ impl server::Handler for TwoFactorServer {
             _ => Auth::reject(),
         })
     }
+
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: russh::Channel<server::Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: server::ChannelOpenHandle,
+        _session: &mut server::Session,
+    ) -> Result<(), Self::Error> {
+        let addr = format!("{host_to_connect}:{port_to_connect}");
+        let Ok(mut tcp) = tokio::net::TcpStream::connect(&addr).await else {
+            return Ok(());
+        };
+        reply.accept().await;
+        let mut ch_stream = channel.into_stream();
+        tokio::spawn(async move {
+            let _ = tokio::io::copy_bidirectional(&mut ch_stream, &mut tcp).await;
+        });
+        Ok(())
+    }
 }
 
 /// Starts a one-connection server and returns its port.
@@ -356,4 +378,35 @@ async fn wrong_passphrases_skip_key_and_fall_back() {
     let p = Scripted::new(&[Some("a"), Some("b"), Some("c"), Some(PASSWORD)]);
     connect_to(port, auto(&[&path]), p.clone()).await.unwrap();
     assert_eq!(p.asked().len(), 4);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connect_via_jump_host() {
+    use maelstromssh_core::target::JumpHost;
+
+    let (jump_key_path, jump_pub) = key_file("jump_key", None);
+    let (target_key_path, target_pub) = key_file("target_key", None);
+    let jump_port = serve(&[MethodKind::PublicKey], Some(jump_pub)).await;
+    let target_port = serve(&[MethodKind::PublicKey], Some(target_pub)).await;
+
+    let jumps = vec![JumpHost {
+        host: "127.0.0.1".into(),
+        port: jump_port,
+        user: "bastion".into(),
+        auth: auto(&[&jump_key_path]),
+    }];
+    let p = Scripted::new(&[]);
+    let session = Session::connect_via(
+        &jumps,
+        "127.0.0.1",
+        target_port,
+        "alice",
+        &auto(&[&target_key_path]),
+        p.clone(),
+        Arc::new(AcceptAll),
+    )
+    .await
+    .unwrap();
+    assert!(p.asked().is_empty());
+    session.disconnect().await.unwrap();
 }

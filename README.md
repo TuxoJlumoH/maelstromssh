@@ -79,6 +79,7 @@ All screenshots are of the web UI, taken against a test server with made-up host
 maelstromssh connect user@host                       # agent, ~/.ssh keys, then password
 maelstromssh connect -i ~/.ssh/id_ed25519 git@github.com
 maelstromssh connect myalias                         # Host alias from ~/.ssh/config
+maelstromssh connect -J ops@bastion user@internal    # jump host (ProxyJump)
 maelstromssh connect -L 8080:localhost:80 user@host  # local forward
 maelstromssh connect -D 1080 user@host               # SOCKS5 proxy
 maelstromssh sftp user@host                          # interactive SFTP shell

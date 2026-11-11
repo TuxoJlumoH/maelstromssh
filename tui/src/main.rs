@@ -41,7 +41,8 @@ async fn main() -> Result<()> {
     // Authentication happens on the ordinary terminal, before we take over
     // the screen with raw mode + the alternate buffer.
     let prompter = Arc::new(TtyPrompter);
-    let session = Session::connect(
+    let session = Session::connect_via(
+        &target.jump,
         &target.host,
         target.port,
         &target.user,

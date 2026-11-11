@@ -211,6 +211,8 @@ enum In {
         #[serde(default)]
         identity: Option<String>,
         #[serde(default)]
+        jump: Option<String>,
+        #[serde(default)]
         profile: Option<String>,
         /// Open a serial port instead of an SSH connection.
         #[serde(default)]
@@ -425,6 +427,7 @@ async fn run(app: Arc<App>, socket: WebSocket) {
                 target,
                 port,
                 identity,
+                jump,
                 profile,
                 serial,
                 tcp,
@@ -449,6 +452,7 @@ async fn run(app: Arc<App>, socket: WebSocket) {
                         identity: identity.filter(|i| !i.trim().is_empty()).map(Into::into),
                         profile: profile.filter(|p| !p.is_empty()),
                         auth: None,
+                        jump: jump.map(|j| j.trim().to_string()).filter(|j| !j.is_empty()),
                     }),
                 };
                 let prompter = Arc::new(WebPrompter {
@@ -669,7 +673,8 @@ async fn run_session(
     // A server that stalls the handshake would otherwise keep this task
     // (and the tab's resources) forever, even after the tab is closed.
     let connected = tokio::select! {
-        r = Session::connect(
+        r = Session::connect_via(
+            &target.jump,
             &target.host,
             target.port,
             &target.user,

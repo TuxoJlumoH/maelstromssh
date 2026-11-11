@@ -15,6 +15,9 @@ pub struct Profile {
     pub user: String,
     #[serde(default)]
     pub auth: AuthMethod,
+    /// Optional ProxyJump specification (e.g. `user@bastion:22` or `hop1,hop2`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_jump: Option<String>,
     #[serde(default)]
     pub forwards: Vec<ForwardRule>,
     /// Line settings; only used by serial profiles.
@@ -34,6 +37,7 @@ impl Profile {
             port: default_port(),
             user: String::new(),
             auth: AuthMethod::default(),
+            proxy_jump: None,
             forwards: Vec::new(),
             serial: None,
             terminal: TerminalSettings::default(),
@@ -184,7 +188,7 @@ pub enum FlowControl {
     Hardware,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum AuthMethod {
     /// Whatever works, as OpenSSH does it: ssh-agent keys, then key files

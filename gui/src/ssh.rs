@@ -116,7 +116,8 @@ pub async fn connect_and_run(
         evt_tx: evt_tx.clone(),
         notify: notify.clone(),
     });
-    let result = Session::connect(
+    let result = Session::connect_via(
+        &target.jump,
         &target.host,
         target.port,
         &target.user,

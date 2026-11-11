@@ -94,13 +94,14 @@ Host web
 
 - Supported: `Host` (with `*`, `?` and `!` patterns), `Match` (`all`, `host`,
   `originalhost`, `user`, `localuser`, `final`; others never match),
-  `Include` (with globs), `HostName`, `User`, `Port`, `IdentityFile` (with
-  `~` and the `%h %n %r %u %p %d %%` tokens).
+  `Include` (with globs), `HostName`, `User`, `Port`, `ProxyJump` (single or
+  comma-separated multi-hop chains, plus `ProxyJump none`), and `IdentityFile`
+  (with `~` and the `%h %n %r %u %p %d %%` tokens).
 - The first value found wins; `IdentityFile`s add up. `IdentityFile`s that
   don't exist are skipped.
-- Command-line `user@`, `-p`, `-i` and `--auth` take priority.
-- `ProxyJump`, `ProxyCommand` and `CertificateFile` are not supported. You get
-  a warning when they apply. Other keywords are ignored silently.
+- Command-line `user@`, `-p`, `-i`, `-J` and `--auth` take priority.
+- `ProxyCommand` and `CertificateFile` are not supported. You get a warning
+  when they apply. Other keywords are ignored silently.
 - A malformed file is an error that names the file and line.
 
 ---

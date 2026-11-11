@@ -176,13 +176,13 @@ enum ProfileCmd {
         /// host or user@host; with --serial, the device (e.g. /dev/ttyUSB0)
         target: String,
         /// Save a serial port profile; set the line with -b, --parity etc.
-        #[arg(long, conflicts_with_all = ["user", "port", "auth", "identity", "local", "remote", "dynamic", "telnet", "raw"])]
+        #[arg(long, conflicts_with_all = ["user", "port", "auth", "identity", "jump", "local", "remote", "dynamic", "telnet", "raw"])]
         serial: bool,
         /// Save a Telnet profile (port 23 unless -p is given).
-        #[arg(long, conflicts_with_all = ["user", "auth", "identity", "local", "remote", "dynamic", "raw"])]
+        #[arg(long, conflicts_with_all = ["user", "auth", "identity", "jump", "local", "remote", "dynamic", "raw"])]
         telnet: bool,
         /// Save a raw TCP profile (needs -p).
-        #[arg(long, requires = "port", conflicts_with_all = ["user", "auth", "identity", "local", "remote", "dynamic"])]
+        #[arg(long, requires = "port", conflicts_with_all = ["user", "auth", "identity", "jump", "local", "remote", "dynamic"])]
         raw: bool,
         #[command(flatten)]
         line: LineArgs,
@@ -194,6 +194,9 @@ enum ProfileCmd {
         auth: Option<AuthChoice>,
         #[arg(short = 'i', long)]
         identity: Option<PathBuf>,
+        /// Connect through one or more jump hosts (`[user@]host[:port][,...]`).
+        #[arg(short = 'J', long = "jump", value_name = "JUMP")]
+        jump: Option<String>,
         /// Local forward: [bind:]port:host:hostport (repeatable).
         #[arg(short = 'L', long = "local-forward", value_name = "SPEC")]
         local: Vec<String>,
@@ -286,6 +289,7 @@ async fn main() -> Result<()> {
                 port,
                 auth,
                 identity,
+                jump,
                 local,
                 remote,
                 dynamic,
@@ -302,7 +306,7 @@ async fn main() -> Result<()> {
                     return profile_add_tcp(name, protocol, target, port);
                 }
                 let forwards = parse_forwards(local, remote, dynamic)?;
-                profile_add(name, target, user, port, auth, identity, forwards)
+                profile_add(name, target, user, port, auth, identity, jump, forwards)
             }
             ProfileCmd::List => profile_list(),
             ProfileCmd::Show { name } => profile_show(name),
@@ -353,7 +357,8 @@ async fn connect_session(target: &Target) -> Result<Session> {
         eprintln!("warning: {warning}");
     }
     let prompter = Arc::new(TtyPrompter);
-    match Session::connect(
+    match Session::connect_via(
+        &target.jump,
         &target.host,
         target.port,
         &target.user,
@@ -706,6 +711,7 @@ mod resize {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn profile_add(
     name: String,
     target: String,
@@ -713,6 +719,7 @@ fn profile_add(
     port: Option<u16>,
     auth: Option<AuthChoice>,
     identity: Option<PathBuf>,
+    jump: Option<String>,
     forwards: Vec<ForwardRule>,
 ) -> Result<()> {
     let store = ProfileStore::default_location()?;
@@ -720,12 +727,14 @@ fn profile_add(
     let user = user.or(default_user).unwrap_or_else(local_user);
     let port = port.unwrap_or(22);
     let auth = auth_from_flags(auth, identity)?;
+    let proxy_jump = jump.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
     let profile = Profile {
         host,
         port,
         user,
         auth,
+        proxy_jump,
         forwards,
         ..Profile::new(name.clone())
     };
@@ -816,6 +825,9 @@ fn profile_show(name: String) -> Result<()> {
     println!("host:    {}:{}", p.host, p.port);
     println!("user:    {}", p.user);
     println!("auth:    {auth}");
+    if let Some(ref jump) = p.proxy_jump {
+        println!("jump:    {jump}");
+    }
     println!("term:    {}", p.terminal.term_type);
     if p.forwards.is_empty() {
         println!("forwards: (none)");

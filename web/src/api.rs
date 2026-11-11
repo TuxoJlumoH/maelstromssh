@@ -118,7 +118,7 @@ fn profile_json(p: &Profile) -> Value {
         .collect();
     json!({
         "name": p.name, "protocol": "ssh", "host": p.host, "port": p.port, "user": p.user,
-        "auth": auth, "identity": identity, "forwards": forwards,
+        "auth": auth, "identity": identity, "jump": p.proxy_jump, "forwards": forwards,
     })
 }
 
@@ -137,6 +137,8 @@ pub struct ProfileForm {
     port: Option<u16>,
     #[serde(default)]
     identity: Option<String>,
+    #[serde(default)]
+    jump: Option<String>,
     #[serde(default)]
     forwards: Vec<ForwardForm>,
     /// The name being edited, when renaming.
@@ -193,11 +195,16 @@ pub async fn save_profile(Json(form): Json<ProfileForm>) -> ApiResult<Json<Value
                 "a profile named '{name}' already exists"
             )));
         }
+        let proxy_jump = form
+            .jump
+            .map(|j| j.trim().to_string())
+            .filter(|j| !j.is_empty());
         let profile = Profile {
             host,
             port: form.port.unwrap_or(22),
             user: user.unwrap_or_else(local_user),
             auth,
+            proxy_jump,
             forwards,
             terminal: existing.map(|p| p.terminal).unwrap_or_default(),
             ..Profile::new(name.clone())

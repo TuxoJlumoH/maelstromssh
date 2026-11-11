@@ -96,6 +96,7 @@ struct ConnectForm {
     profile: Option<String>,
     port: String,
     identity: String,
+    jump: String,
     /// `None`: auto, or whatever the profile says.
     auth: Option<AuthChoice>,
     error: Option<String>,
@@ -127,6 +128,7 @@ impl ConnectForm {
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
+        form.jump = args.jump.clone().unwrap_or_default();
         form.auth = args.auth;
         form
     }
@@ -140,6 +142,20 @@ impl ConnectForm {
             form.target = format!("{}@{}", target.user, target.host);
             if target.port != 22 {
                 form.port = target.port.to_string();
+            }
+            if !target.jump.is_empty() {
+                form.jump = target
+                    .jump
+                    .iter()
+                    .map(|j| {
+                        if j.port == 22 {
+                            format!("{}@{}", j.user, j.host)
+                        } else {
+                            format!("{}@{}:{}", j.user, j.host, j.port)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
             }
         }
         form
@@ -160,12 +176,14 @@ impl ConnectForm {
             return Err("enter user@host, a host, or an ssh_config alias".into());
         }
         let identity = self.identity.trim();
+        let jump = self.jump.trim();
         Ok(TargetArgs {
             target: self.profile.is_none().then(|| target.to_string()),
             port,
             identity: (!identity.is_empty()).then(|| identity.into()),
             profile: self.profile.clone(),
             auth: self.auth,
+            jump: (!jump.is_empty()).then(|| jump.to_string()),
         })
     }
 }
@@ -388,6 +406,14 @@ impl GuiApp {
                 ui.add(
                     egui::TextEdit::singleline(&mut form.identity)
                         .hint_text("optional, e.g. ~/.ssh/id_ed25519")
+                        .desired_width(280.0),
+                );
+                ui.end_row();
+
+                ui.label("Jump host");
+                ui.add(
+                    egui::TextEdit::singleline(&mut form.jump)
+                        .hint_text("optional, e.g. user@bastion:22")
                         .desired_width(280.0),
                 );
                 ui.end_row();

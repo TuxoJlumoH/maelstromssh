@@ -9,6 +9,18 @@ use crate::config::{
 };
 use crate::error::{Error, Result};
 
+/// Maximum number of ProxyJump hops before reporting a loop.
+const MAX_JUMP_HOPS: usize = 8;
+
+/// One SSH jump host (`ProxyJump` / `-J`) on the path to a [`Target`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpHost {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub auth: AuthMethod,
+}
+
 /// A fully resolved connection target.
 #[derive(Debug, Clone)]
 pub struct Target {
@@ -18,6 +30,8 @@ pub struct Target {
     pub port: u16,
     pub user: String,
     pub auth: AuthMethod,
+    /// Jump hosts (`ProxyJump` / `-J`), in connection order (outermost bastion first).
+    pub jump: Vec<JumpHost>,
     pub forwards: Vec<ForwardRule>,
     /// Line settings; `Some` for serial.
     pub serial: Option<SerialSettings>,
@@ -35,6 +49,7 @@ impl Target {
             port: 0,
             user: String::new(),
             auth: AuthMethod::default(),
+            jump: Vec::new(),
             forwards: Vec::new(),
             serial: Some(settings),
             warnings: Vec::new(),
@@ -49,6 +64,7 @@ impl Target {
             port,
             user: String::new(),
             auth: AuthMethod::default(),
+            jump: Vec::new(),
             forwards: Vec::new(),
             serial: None,
             warnings: Vec::new(),
@@ -143,6 +159,9 @@ pub struct TargetArgs {
     /// Authentication method (default: auto).
     #[cfg_attr(feature = "clap", arg(long, value_enum))]
     pub auth: Option<AuthChoice>,
+    /// Connect through one or more jump hosts (`[user@]host[:port][,...]`).
+    #[cfg_attr(feature = "clap", arg(short = 'J', long = "jump", value_name = "JUMP"))]
+    pub jump: Option<String>,
 }
 
 impl TargetArgs {
@@ -157,11 +176,7 @@ impl TargetArgs {
     /// protocol (e.g. serial); check `Target::protocol`.
     pub fn resolve_any(self) -> Result<Target> {
         let store = ProfileStore::default_location()?;
-        let ssh_config = if self.profile.is_some() {
-            SshConfig::default()
-        } else {
-            SshConfig::load_default()?
-        };
+        let ssh_config = SshConfig::load_default()?;
         self.resolve_any_with(&store, &ssh_config)
     }
 
@@ -171,8 +186,11 @@ impl TargetArgs {
     }
 
     /// Command-line flags win over `ssh_config`, which wins over defaults.
-    /// Saved profiles are used as they are; `ssh_config` does not apply.
+    /// Saved profiles are used as they are; `ssh_config` does not apply to
+    /// the profile's own host/port/user, though jump-host aliases inside
+    /// `proxy_jump` / `-J` may reference profiles or `ssh_config`.
     pub fn resolve_any_with(self, store: &ProfileStore, ssh_config: &SshConfig) -> Result<Target> {
+        let cli_identity_str = self.identity.as_ref().map(|p| p.display().to_string());
         if let Some(name) = self.profile {
             let p = store.load(&name)?;
             match p.protocol {
@@ -191,15 +209,28 @@ impl TargetArgs {
                     None => p.auth,
                 },
             };
+            let mut warnings = Vec::new();
+            let jump_spec = self.jump.or(p.proxy_jump);
+            let jump = match jump_spec {
+                Some(raw) => resolve_jump_csv(
+                    &raw,
+                    store,
+                    ssh_config,
+                    cli_identity_str.as_deref(),
+                    &mut warnings,
+                )?,
+                None => Vec::new(),
+            };
             return Ok(Target {
                 protocol: Protocol::Ssh,
                 host: p.host,
                 port: self.port.unwrap_or(p.port),
                 user: p.user,
                 auth,
+                jump,
                 forwards: p.forwards,
                 serial: None,
-                warnings: Vec::new(),
+                warnings,
             });
         }
 
@@ -215,21 +246,200 @@ impl TargetArgs {
             Some(id) => auth_from_flags(self.auth, Some(id))?,
             None => auth_with_config(self.auth, &config)?,
         };
+        let mut warnings: Vec<String> = config
+            .unsupported
+            .iter()
+            .map(|k| format!("ignoring {k} (not supported by maelstromssh)"))
+            .collect();
+        let jump = match self.jump {
+            Some(raw) => resolve_jump_csv(
+                &raw,
+                store,
+                ssh_config,
+                cli_identity_str.as_deref(),
+                &mut warnings,
+            )?,
+            None => resolve_jump_specs(
+                &config.proxy_jump,
+                store,
+                ssh_config,
+                cli_identity_str.as_deref(),
+                &mut warnings,
+                0,
+            )?,
+        };
         Ok(Target {
             protocol: Protocol::Ssh,
             host: config.hostname.unwrap_or(host),
             port: self.port.or(config.port).unwrap_or(22),
             user: user.or(config.user).unwrap_or_else(local_user),
             auth,
+            jump,
             forwards: Vec::new(),
             serial: None,
-            warnings: config
-                .unsupported
-                .iter()
-                .map(|k| format!("ignoring {k} (not supported by maelstromssh)"))
-                .collect(),
+            warnings,
         })
     }
+}
+
+fn resolve_jump_csv(
+    raw: &str,
+    store: &ProfileStore,
+    ssh_config: &SshConfig,
+    cli_identity: Option<&str>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<JumpHost>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        return Ok(Vec::new());
+    }
+    let specs: Vec<String> = trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    resolve_jump_specs(&specs, store, ssh_config, cli_identity, warnings, 0)
+}
+
+fn resolve_jump_specs(
+    specs: &[String],
+    store: &ProfileStore,
+    ssh_config: &SshConfig,
+    cli_identity: Option<&str>,
+    warnings: &mut Vec<String>,
+    depth: usize,
+) -> Result<Vec<JumpHost>> {
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    if depth >= MAX_JUMP_HOPS {
+        return Err(Error::Config(
+            "too many ProxyJump hops (possible loop in ssh_config or profiles)".into(),
+        ));
+    }
+    let mut out = Vec::new();
+    for spec in specs {
+        if spec.eq_ignore_ascii_case("none") {
+            continue;
+        }
+        let (user, host, port) = parse_jump_endpoint(spec)?;
+        if user.is_none() && port.is_none() {
+            if let Ok(prof) = store.load(&host) {
+                if prof.protocol == Protocol::Ssh {
+                    if let Some(ref pj) = prof.proxy_jump {
+                        let nested: Vec<String> = pj
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                            .collect();
+                        out.extend(resolve_jump_specs(
+                            &nested,
+                            store,
+                            ssh_config,
+                            cli_identity,
+                            warnings,
+                            depth + 1,
+                        )?);
+                    }
+                    out.push(JumpHost {
+                        host: prof.host,
+                        port: prof.port,
+                        user: prof.user,
+                        auth: prof.auth,
+                    });
+                    if out.len() > MAX_JUMP_HOPS {
+                        return Err(Error::Config("too many ProxyJump hops".into()));
+                    }
+                    continue;
+                }
+            }
+        }
+
+        let cfg = ssh_config.lookup(&host, user.as_deref())?;
+        for k in &cfg.unsupported {
+            let msg = format!("ignoring {k} (not supported by maelstromssh)");
+            if !warnings.contains(&msg) {
+                warnings.push(msg);
+            }
+        }
+        // In OpenSSH, an individual alias in ProxyJump that defines its own
+        // ProxyJump is expanded recursively when not part of a comma-separated list.
+        if specs.len() == 1 && !cfg.proxy_jump.is_empty() {
+            out.extend(resolve_jump_specs(
+                &cfg.proxy_jump,
+                store,
+                ssh_config,
+                cli_identity,
+                warnings,
+                depth + 1,
+            )?);
+        }
+        let mut auth = auth_with_config(None, &cfg)?;
+        if let (Some(id), AuthMethod::Auto { identities }) = (cli_identity, &mut auth) {
+            if !identities.iter().any(|existing| existing == id) {
+                identities.push(id.to_string());
+            }
+        }
+        out.push(JumpHost {
+            host: cfg.hostname.unwrap_or(host),
+            port: port.or(cfg.port).unwrap_or(22),
+            user: user.or(cfg.user).unwrap_or_else(local_user),
+            auth,
+        });
+        if out.len() > MAX_JUMP_HOPS {
+            return Err(Error::Config("too many ProxyJump hops".into()));
+        }
+    }
+    Ok(out)
+}
+
+/// Parses `[ssh://][user@]host[:port]` or `[user@][ipv6][:port]`.
+pub fn parse_jump_endpoint(spec: &str) -> Result<(Option<String>, String, Option<u16>)> {
+    let trimmed = spec.trim();
+    let without_scheme = trimmed.strip_prefix("ssh://").unwrap_or(trimmed);
+    let (user, host_port) = split_target(without_scheme);
+    if let Some(user_str) = &user {
+        if user_str.is_empty() {
+            return Err(Error::Config(format!(
+                "missing user before '@' in jump host '{spec}'"
+            )));
+        }
+    }
+    let (host, port) = if let Some(rest) = host_port.strip_prefix('[') {
+        let Some((ipv6, after)) = rest.split_once(']') else {
+            return Err(Error::Config(format!("unclosed '[' in jump host '{spec}'")));
+        };
+        let port = if let Some(p_str) = after.strip_prefix(':') {
+            Some(
+                p_str
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|&p| p > 0)
+                    .ok_or_else(|| Error::Config(format!("invalid port in jump host '{spec}'")))?,
+            )
+        } else if after.is_empty() {
+            None
+        } else {
+            return Err(Error::Config(format!("invalid jump host '{spec}'")));
+        };
+        (ipv6.to_string(), port)
+    } else if host_port.matches(':').count() == 1 {
+        let (h, p_str) = host_port.split_once(':').unwrap();
+        let port = p_str
+            .parse::<u16>()
+            .ok()
+            .filter(|&p| p > 0)
+            .ok_or_else(|| Error::Config(format!("invalid port in jump host '{spec}'")))?;
+        (h.to_string(), Some(port))
+    } else {
+        (host_port, None)
+    };
+    if host.is_empty() || host.chars().any(char::is_whitespace) {
+        return Err(Error::Config(format!("invalid jump host '{spec}'")));
+    }
+    Ok((user, host, port))
 }
 
 fn ssh_only(target: Target) -> Result<Target> {
@@ -470,5 +680,50 @@ mod tests {
         assert!(matches!(t.auth, AuthMethod::PublicKey { ref key_path } if key_path == &key_str));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolves_proxy_jump_from_config_and_cli_override() {
+        let config = SshConfig::parse(
+            "Host bastion1\n  HostName 203.0.113.1\n  User ops\n  Port 2201\n\
+             Host bastion2\n  HostName 10.0.0.1\n  User relay\n  ProxyJump bastion1\n\
+             Host internal\n  HostName 10.0.1.50\n  User app\n  ProxyJump bastion2\n",
+            std::path::Path::new("/nonexistent"),
+        )
+        .unwrap();
+        let store = ProfileStore::new("/nonexistent");
+
+        // Recursive ProxyJump chain: internal -> bastion2 -> bastion1.
+        let t = TargetArgs {
+            target: Some("internal".into()),
+            ..Default::default()
+        }
+        .resolve_with(&store, &config)
+        .unwrap();
+        assert_eq!(t.host, "10.0.1.50");
+        assert_eq!(t.jump.len(), 2);
+        assert_eq!(
+            (&t.jump[0].host[..], t.jump[0].port, &t.jump[0].user[..]),
+            ("203.0.113.1", 2201, "ops")
+        );
+        assert_eq!(
+            (&t.jump[1].host[..], t.jump[1].port, &t.jump[1].user[..]),
+            ("10.0.0.1", 22, "relay")
+        );
+
+        // CLI `-J` overrides ssh_config ProxyJump.
+        let t = TargetArgs {
+            target: Some("internal".into()),
+            jump: Some("custom@jump.example.com:2222,[2001:db8::1]:2200".into()),
+            ..Default::default()
+        }
+        .resolve_with(&store, &config)
+        .unwrap();
+        assert_eq!(t.jump.len(), 2);
+        assert_eq!(
+            (&t.jump[0].host[..], t.jump[0].port, &t.jump[0].user[..]),
+            ("jump.example.com", 2222, "custom")
+        );
+        assert_eq!((&t.jump[1].host[..], t.jump[1].port), ("2001:db8::1", 2200));
     }
 }

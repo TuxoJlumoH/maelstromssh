@@ -939,7 +939,8 @@ connectDialog.addEventListener("close", () => {
   if (!target) return;
   const port = form.port.value ? Number(form.port.value) : undefined;
   const identity = form.identity.value.trim() || undefined;
-  new Tab(port ? `${target}:${port}` : target, { target, port, identity, log });
+  const jump = form.jump.value.trim() || undefined;
+  new Tab(port ? `${target}:${port}` : target, { target, port, identity, jump, log });
 });
 
 // Profile dialog
@@ -970,6 +971,7 @@ function editProfile(profile) {
     form.target.value = `${profile.user}@${profile.host}`;
     form.port.value = profile.port !== 22 ? profile.port : "";
     form.identity.value = profile.identity || "";
+    form.jump.value = profile.jump || "";
     form.forwards.value = profile.forwards.map((f) => `${FLAGS[f.kind]} ${f.spec}`).join("\n");
   }
   profileDialog.showModal();
@@ -1023,6 +1025,7 @@ $("form", profileDialog).addEventListener("submit", async (e) => {
         target: form.target.value.trim(),
         port: form.port.value ? Number(form.port.value) : null,
         identity: form.identity.value.trim() || null,
+        jump: form.jump.value.trim() || null,
         forwards: parseForwardLines(form.forwards.value),
         original: editing ? editing.name : null,
       });

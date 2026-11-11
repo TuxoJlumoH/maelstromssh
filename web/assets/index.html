@@ -136,6 +136,7 @@
           <label>Port <input name="port" type="number" min="1" max="65535" placeholder="22"></label>
           <label class="grow">Key file <input name="identity" list="ssh-keys" placeholder="optional, e.g. ~/.ssh/id_ed25519" spellcheck="false"></label>
         </div>
+        <label>Jump host (-J) <input name="jump" placeholder="optional, e.g. user@bastion:22" spellcheck="false" autocomplete="off"></label>
         <p class="muted small">Logs in like OpenSSH: ssh-agent, your ~/.ssh keys, then password or 2FA.</p>
       </div>
       <div class="serial-only">
@@ -181,6 +182,7 @@
           <label>Port <input name="port" type="number" min="1" max="65535" placeholder="22"></label>
           <label class="grow">Key file <input name="identity" list="ssh-keys" placeholder="optional" spellcheck="false"></label>
         </div>
+        <label>Jump host (-J) <input name="jump" placeholder="optional, e.g. user@bastion:22" spellcheck="false" autocomplete="off"></label>
         <label>Port forwards, one per line <textarea name="forwards" rows="3" spellcheck="false" placeholder="-L 8080:localhost:80&#10;-D 1080"></textarea></label>
       </div>
       <div class="serial-only">

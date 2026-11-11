@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use crate::config::AuthMethod;
 use crate::error::{Error, Result};
 use crate::prompt::Prompter;
+use crate::target::JumpHost;
 
 use super::auth::{Authenticator, KeyFile};
 use super::client::{ClientHandler, HostKeyVerifier, ServerEvent};
@@ -16,6 +17,9 @@ use super::client::{ClientHandler, HostKeyVerifier, ServerEvent};
 /// so callers (CLI/TUI/GUI) never touch `russh` types directly.
 pub struct Session {
     handle: Arc<Handle<ClientHandler>>,
+    /// Jump-host sessions kept alive while this target session is open,
+    /// ordered from outermost bastion to innermost hop.
+    jump_handles: Vec<Arc<Handle<ClientHandler>>>,
     /// Server-initiated channel events (remote forwarding). Taken by the
     /// tunnel module when remote forwards are requested.
     events: Option<mpsc::UnboundedReceiver<ServerEvent>>,
@@ -72,6 +76,130 @@ impl Session {
         prompter: Arc<dyn Prompter>,
         verifier: Arc<dyn HostKeyVerifier>,
     ) -> Result<Self> {
+        Self::connect_via(&[], host, port, user, auth, prompter, verifier).await
+    }
+
+    /// Connects to `host:port` through zero or more SSH jump hosts (`ProxyJump`
+    /// / `-J`), tunneling each hop over a `direct-tcpip` channel on the
+    /// previous hop.
+    pub async fn connect_via(
+        jumps: &[JumpHost],
+        host: &str,
+        port: u16,
+        user: &str,
+        auth: &AuthMethod,
+        prompter: Arc<dyn Prompter>,
+        verifier: Arc<dyn HostKeyVerifier>,
+    ) -> Result<Self> {
+        // Read key files first so a bad path fails before any network I/O.
+        let mut jump_keys = Vec::with_capacity(jumps.len());
+        for hop in jumps {
+            jump_keys.push(KeyFile::for_method(&hop.auth)?);
+        }
+        let target_keys = KeyFile::for_method(auth)?;
+
+        let mut jump_handles: Vec<Arc<Handle<ClientHandler>>> = Vec::with_capacity(jumps.len());
+        for (hop, keys) in jumps.iter().zip(jump_keys) {
+            let (handle, _rx) = match jump_handles.last() {
+                None => {
+                    let socket = crate::net::connect(&hop.host, hop.port, "sshd").await?;
+                    Self::handshake_and_auth(
+                        socket,
+                        &hop.host,
+                        hop.port,
+                        &hop.user,
+                        &hop.auth,
+                        keys,
+                        &prompter,
+                        verifier.clone(),
+                    )
+                    .await?
+                }
+                Some(prev) => {
+                    let channel = prev
+                        .channel_open_direct_tcpip(&hop.host, hop.port as u32, "127.0.0.1", 0)
+                        .await
+                        .map_err(|e| Error::Connect {
+                            addr: format!("{}:{}", hop.host, hop.port),
+                            reason: format!("via jump host: {e}"),
+                        })?;
+                    Self::handshake_and_auth(
+                        channel.into_stream(),
+                        &hop.host,
+                        hop.port,
+                        &hop.user,
+                        &hop.auth,
+                        keys,
+                        &prompter,
+                        verifier.clone(),
+                    )
+                    .await?
+                }
+            };
+            jump_handles.push(handle);
+        }
+
+        let (handle, rx) = match jump_handles.last() {
+            None => {
+                let socket = crate::net::connect(host, port, "sshd").await?;
+                Self::handshake_and_auth(
+                    socket,
+                    host,
+                    port,
+                    user,
+                    auth,
+                    target_keys,
+                    &prompter,
+                    verifier,
+                )
+                .await?
+            }
+            Some(prev) => {
+                let channel = prev
+                    .channel_open_direct_tcpip(host, port as u32, "127.0.0.1", 0)
+                    .await
+                    .map_err(|e| Error::Connect {
+                        addr: format!("{host}:{port}"),
+                        reason: format!("via jump host: {e}"),
+                    })?;
+                Self::handshake_and_auth(
+                    channel.into_stream(),
+                    host,
+                    port,
+                    user,
+                    auth,
+                    target_keys,
+                    &prompter,
+                    verifier,
+                )
+                .await?
+            }
+        };
+
+        Ok(Self {
+            handle,
+            jump_handles,
+            events: Some(rx),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handshake_and_auth<S>(
+        stream: S,
+        host: &str,
+        port: u16,
+        user: &str,
+        auth: &AuthMethod,
+        keys: Vec<KeyFile>,
+        prompter: &Arc<dyn Prompter>,
+        verifier: Arc<dyn HostKeyVerifier>,
+    ) -> Result<(
+        Arc<Handle<ClientHandler>>,
+        mpsc::UnboundedReceiver<ServerEvent>,
+    )>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         let config = Arc::new(client::Config {
             keepalive_interval: Some(KEEPALIVE_INTERVAL),
             keepalive_max: KEEPALIVE_MAX,
@@ -87,10 +215,7 @@ impl Session {
             rejection: rejection.clone(),
         };
 
-        // Read key files first so a bad path fails before any network I/O.
-        let keys = KeyFile::for_method(auth)?;
-        let socket = crate::net::connect(host, port, "sshd").await?;
-        let mut handle = match client::connect_stream(config, socket, handler).await {
+        let mut handle = match client::connect_stream(config, stream, handler).await {
             Ok(h) => h,
             Err(e) => {
                 let reason = rejection.lock().unwrap_or_else(|p| p.into_inner()).take();
@@ -104,7 +229,7 @@ impl Session {
             }
         };
 
-        let outcome = Authenticator::new(&mut handle, user, host, &prompter)
+        let outcome = Authenticator::new(&mut handle, user, host, prompter)
             .run(auth, keys)
             .await?;
         if let Err(details) = outcome {
@@ -115,10 +240,7 @@ impl Session {
             });
         }
 
-        Ok(Self {
-            handle: Arc::new(handle),
-            events: Some(rx),
-        })
+        Ok((Arc::new(handle), rx))
     }
 
     /// Opens an interactive shell channel with a PTY, matching the given
@@ -165,11 +287,17 @@ impl Session {
     }
 
     pub async fn disconnect(&self) -> Result<()> {
-        self.handle
+        let res = self
+            .handle
             .disconnect(russh::Disconnect::ByApplication, "", "English")
             .await
-            .map_err(Error::Ssh)?;
-        Ok(())
+            .map_err(Error::Ssh);
+        for jh in self.jump_handles.iter().rev() {
+            let _ = jh
+                .disconnect(russh::Disconnect::ByApplication, "", "English")
+                .await;
+        }
+        res
     }
 
     /// Whether the connection has gone away (closed by either side).
