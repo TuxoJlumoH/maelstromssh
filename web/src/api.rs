@@ -294,6 +294,49 @@ pub async fn delete_known_host(Path(line): Path<usize>) -> ApiResult<StatusCode>
     .await
 }
 
+/// `GET /api/keys`: public keys in `~/.ssh`.
+pub async fn ssh_keys() -> ApiResult<Json<Value>> {
+    blocking(|| {
+        let dir = maelstromssh_core::keys::default_ssh_dir().map_err(server_error)?;
+        let keys = maelstromssh_core::keys::list_ssh_keys(&dir).map_err(server_error)?;
+        Ok(Json(json!({
+            "dir": maelstromssh_core::paths::collapse_home(&dir),
+            "keys": keys,
+        })))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct GenerateKeyForm {
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub bits: Option<usize>,
+    #[serde(default)]
+    pub comment: String,
+}
+
+/// `POST /api/keys`: generates a new keypair in `~/.ssh`.
+pub async fn generate_ssh_key(Json(form): Json<GenerateKeyForm>) -> ApiResult<Json<Value>> {
+    blocking(move || {
+        use maelstromssh_core::keys::{default_ssh_dir, generate_in_dir, KeyKind};
+        let dir = default_ssh_dir().map_err(server_error)?;
+        let kind = match form.kind.as_str() {
+            "" | "ed25519" => KeyKind::Ed25519,
+            "rsa" => KeyKind::Rsa {
+                bits: form.bits.unwrap_or(3072),
+            },
+            other => return Err(bad_request(format!("unsupported key type '{other}'"))),
+        };
+        let info =
+            generate_in_dir(&dir, &form.name, kind, form.comment.trim()).map_err(bad_request)?;
+        Ok(Json(json!(info)))
+    })
+    .await
+}
+
 #[derive(Deserialize)]
 pub struct FilePath {
     path: String,

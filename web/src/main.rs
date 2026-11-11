@@ -139,6 +139,7 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/profiles/{name}", delete(api::delete_profile))
         .route("/api/known-hosts", get(api::known_hosts))
         .route("/api/known-hosts/{line}", delete(api::delete_known_host))
+        .route("/api/keys", get(api::ssh_keys).post(api::generate_ssh_key))
         .route("/api/conn/{id}/download", post(api::download_ticket))
         .route(
             "/api/conn/{id}/upload",

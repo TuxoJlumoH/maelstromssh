@@ -86,6 +86,8 @@ async fn api_routes_need_the_token() {
         (Method::GET, "/api/serial-ports"),
         (Method::GET, "/api/known-hosts"),
         (Method::DELETE, "/api/known-hosts/1"),
+        (Method::GET, "/api/keys"),
+        (Method::POST, "/api/keys"),
         (Method::POST, "/api/profiles"),
         (Method::DELETE, "/api/profiles/x"),
         (Method::POST, "/api/conn/1/download"),

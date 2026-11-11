@@ -33,6 +33,7 @@
 
     <p id="host-errors" class="error small" hidden></p>
     <div class="sidebar-foot">
+      <button id="ssh-keys-btn" class="wide">SSH keys</button>
       <button id="known-hosts-btn" class="wide">Known hosts</button>
     </div>
   </aside>
@@ -124,7 +125,7 @@
         <label>Host <input name="target" placeholder="user@host or an ssh_config alias" required spellcheck="false" autocomplete="off"></label>
         <div class="row">
           <label>Port <input name="port" type="number" min="1" max="65535" placeholder="22"></label>
-          <label class="grow">Key file <input name="identity" placeholder="optional, e.g. ~/.ssh/id_ed25519" spellcheck="false"></label>
+          <label class="grow">Key file <input name="identity" list="ssh-keys" placeholder="optional, e.g. ~/.ssh/id_ed25519" spellcheck="false"></label>
         </div>
         <p class="muted small">Logs in like OpenSSH: ssh-agent, your ~/.ssh keys, then password or 2FA.</p>
       </div>
@@ -169,7 +170,7 @@
         <label>Host <input name="target" placeholder="user@host" required spellcheck="false"></label>
         <div class="row">
           <label>Port <input name="port" type="number" min="1" max="65535" placeholder="22"></label>
-          <label class="grow">Key file <input name="identity" placeholder="optional" spellcheck="false"></label>
+          <label class="grow">Key file <input name="identity" list="ssh-keys" placeholder="optional" spellcheck="false"></label>
         </div>
         <label>Port forwards, one per line <textarea name="forwards" rows="3" spellcheck="false" placeholder="-L 8080:localhost:80&#10;-D 1080"></textarea></label>
       </div>
@@ -203,11 +204,41 @@
   </dialog>
 
   <datalist id="serial-ports"></datalist>
+  <datalist id="ssh-keys"></datalist>
   <datalist id="baud-rates">
     <option value="300"><option value="1200"><option value="2400"><option value="4800">
     <option value="9600"><option value="19200"><option value="38400"><option value="57600">
     <option value="115200"><option value="230400"><option value="460800"><option value="921600">
   </datalist>
+
+  <dialog id="keys-dialog">
+    <div class="dialog-form">
+      <h2>SSH keys</h2>
+      <p id="keys-dir-note" class="muted small"></p>
+      <div class="known-hosts-wrap">
+        <table class="files known-hosts-table">
+          <thead><tr><th>File</th><th>Type</th><th>Fingerprint</th><th></th></tr></thead>
+          <tbody id="keys-body"></tbody>
+        </table>
+        <p id="no-keys" class="muted small" hidden>No public keys in ~/.ssh yet. Generate one below.</p>
+      </div>
+      <form id="keygen-form" class="keygen-box">
+        <h3>Generate a new keypair</h3>
+        <div class="row">
+          <label>Type <select name="kind"><option value="ed25519">Ed25519</option><option value="rsa">RSA (3072-bit)</option></select></label>
+          <label class="grow">File name <input name="name" value="id_ed25519" required spellcheck="false"></label>
+          <label class="grow">Comment <input name="comment" placeholder="optional, e.g. user@laptop" spellcheck="false"></label>
+        </div>
+        <div class="buttons">
+          <button type="submit" class="primary">Generate key</button>
+        </div>
+      </form>
+      <p id="keys-error" class="error small" hidden></p>
+      <div class="buttons">
+        <button type="button" id="keys-close">Close</button>
+      </div>
+    </div>
+  </dialog>
 
   <dialog id="known-hosts-dialog">
     <form method="dialog" class="dialog-form">

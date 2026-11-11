@@ -1072,13 +1072,84 @@ function openKnownHosts() {
   knownHostsDialog.showModal();
 }
 
+// SSH keys dialog
+
+const keysDialog = $("#keys-dialog");
+const keygenForm = $("#keygen-form");
+
+async function loadSshKeys() {
+  const error = $("#keys-error");
+  if (error) error.hidden = true;
+  try {
+    const data = await api("GET", "/api/keys");
+    $("#ssh-keys").replaceChildren(...data.keys.map((k) =>
+      el("option", { value: k.private_path }, `${k.name} (${k.algorithm})`)));
+    $("#keys-dir-note").textContent = `Public keys in ${data.dir} (copy a public key to paste into ~/.ssh/authorized_keys on a server):`;
+    const tbody = $("#keys-body");
+    tbody.replaceChildren(...data.keys.map((k) => {
+      const copyBtn = el("button", { type: "button", class: "small", onclick: async () => {
+        try {
+          await navigator.clipboard.writeText(k.openssh);
+          copyBtn.textContent = "Copied!";
+          setTimeout(() => { copyBtn.textContent = "Copy .pub"; }, 1500);
+        } catch {
+          prompt("Copy public key:", k.openssh);
+        }
+      } }, "Copy .pub");
+      return el("tr", {},
+        el("td", { title: k.public_path, text: k.name }),
+        el("td", { class: "muted", text: k.algorithm }),
+        el("td", { class: "mono small", text: k.fingerprint }),
+        el("td", { class: "actions" }, copyBtn));
+    }));
+    $("#no-keys").hidden = data.keys.length > 0;
+  } catch (err) {
+    if (error) {
+      error.textContent = err.message;
+      error.hidden = false;
+    }
+  }
+}
+
+keygenForm.kind.addEventListener("change", () => {
+  if (keygenForm.name.value === "id_ed25519" || keygenForm.name.value === "id_rsa") {
+    keygenForm.name.value = keygenForm.kind.value === "rsa" ? "id_rsa" : "id_ed25519";
+  }
+});
+
+keygenForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const error = $("#keys-error");
+  error.hidden = true;
+  try {
+    await api("POST", "/api/keys", {
+      kind: keygenForm.kind.value,
+      name: keygenForm.name.value.trim(),
+      comment: keygenForm.comment.value.trim(),
+    });
+    await loadSshKeys();
+  } catch (err) {
+    error.textContent = err.message;
+    error.hidden = false;
+  }
+});
+
+$("#keys-close").addEventListener("click", () => keysDialog.close());
+
+function openSshKeys() {
+  loadSshKeys();
+  keysDialog.showModal();
+}
+
 // ---------------------------------------------------------------------------
 
 $("#new-connection").addEventListener("click", openConnect);
 $("#welcome-connect").addEventListener("click", openConnect);
 $("#new-profile").addEventListener("click", () => editProfile(null));
+$("#ssh-keys-btn").addEventListener("click", openSshKeys);
 $("#known-hosts-btn").addEventListener("click", openKnownHosts);
 window.addEventListener("beforeunload", (e) => {
   if (tabs.some((t) => t.live)) e.preventDefault();
 });
 loadHosts();
+loadSshKeys();

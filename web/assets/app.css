@@ -109,10 +109,12 @@ section h2 { margin-bottom: 6px; }
 .host-list .host .sub { font-size: 12px; color: var(--muted); }
 .host-list .edit { visibility: hidden; background: none; border: none; color: var(--muted); }
 .host-list li:hover .edit, .host-list .edit:focus-visible { visibility: visible; }
-.sidebar-foot { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--border); }
-#known-hosts-dialog { width: 640px; }
-.known-hosts-wrap { max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.sidebar-foot { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+#known-hosts-dialog, #keys-dialog { width: 640px; }
+.known-hosts-wrap { max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
 .known-hosts-table td.mono { font-family: ui-monospace, monospace; }
+.keygen-box { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); }
+.keygen-box h3 { font-size: 13px; margin: 0; }
 
 /* Main area and tabs */
 
