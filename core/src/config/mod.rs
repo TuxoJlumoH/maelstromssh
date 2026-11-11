@@ -3,6 +3,7 @@
 
 mod forward_spec;
 mod profile;
+mod snippets;
 mod ssh_config;
 mod store;
 
@@ -11,5 +12,6 @@ pub use profile::{
     AuthMethod, FlowControl, ForwardKind, ForwardRule, Parity, Profile, Protocol, SerialSettings,
     TerminalSettings,
 };
+pub use snippets::{Snippet, SnippetStore};
 pub use ssh_config::{HostConfig, SshConfig};
 pub use store::{check_name as check_profile_name, ProfileStore};

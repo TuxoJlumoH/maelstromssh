@@ -12,7 +12,7 @@ use axum::Json;
 use futures_util::TryStreamExt;
 use maelstromssh_core::config::{
     check_profile_name, parse_forward, AuthMethod, ForwardKind, Profile, ProfileStore, Protocol,
-    SerialSettings, SshConfig,
+    SerialSettings, Snippet, SnippetStore, SshConfig,
 };
 use maelstromssh_core::sftp;
 use maelstromssh_core::target::{local_user, split_target};
@@ -333,6 +333,54 @@ pub async fn generate_ssh_key(Json(form): Json<GenerateKeyForm>) -> ApiResult<Js
         let info =
             generate_in_dir(&dir, &form.name, kind, form.comment.trim()).map_err(bad_request)?;
         Ok(Json(json!(info)))
+    })
+    .await
+}
+
+/// `GET /api/snippets`: saved command snippets.
+pub async fn snippets() -> ApiResult<Json<Value>> {
+    blocking(|| {
+        let store = SnippetStore::default_location().map_err(server_error)?;
+        let list = store.list().map_err(server_error)?;
+        Ok(Json(json!(list)))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct SnippetForm {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub run: bool,
+    pub original: Option<String>,
+}
+
+/// `POST /api/snippets`: creates or updates a command snippet.
+pub async fn save_snippet(Json(form): Json<SnippetForm>) -> ApiResult<Json<Value>> {
+    blocking(move || {
+        let store = SnippetStore::default_location().map_err(server_error)?;
+        let list = store
+            .save(
+                Snippet {
+                    name: form.name,
+                    command: form.command,
+                    run: form.run,
+                },
+                form.original.as_deref(),
+            )
+            .map_err(bad_request)?;
+        Ok(Json(json!(list)))
+    })
+    .await
+}
+
+/// `DELETE /api/snippets/{name}`: deletes a saved snippet.
+pub async fn delete_snippet(Path(name): Path<String>) -> ApiResult<Json<Value>> {
+    blocking(move || {
+        let store = SnippetStore::default_location().map_err(server_error)?;
+        let list = store.delete(&name).map_err(bad_request)?;
+        Ok(Json(json!(list)))
     })
     .await
 }

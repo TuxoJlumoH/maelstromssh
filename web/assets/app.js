@@ -1141,11 +1141,97 @@ function openSshKeys() {
   keysDialog.showModal();
 }
 
+// Command snippets
+
+const snippetDialog = $("#snippet-dialog");
+let editingSnippet = null;
+
+function renderSnippets(list) {
+  $("#snippets").replaceChildren(...list.map((s) => el("li", {},
+    el("button", {
+      class: "host",
+      title: s.run ? `Run: ${s.command}` : `Paste: ${s.command}`,
+      onclick: () => {
+        if (selected?.live) {
+          selected.sendBytes(encoder.encode(s.command + (s.run ? "\r" : "")));
+          selected.term.focus();
+        }
+      },
+    },
+      el("span", { text: s.name }),
+      el("span", { class: "sub", text: s.command })),
+    el("button", {
+      class: "edit icon",
+      title: "Edit",
+      "aria-label": `Edit ${s.name}`,
+      onclick: () => editSnippet(s),
+    }, "✎"))));
+  $("#no-snippets").hidden = list.length > 0;
+}
+
+async function loadSnippets() {
+  try {
+    renderSnippets(await api("GET", "/api/snippets"));
+  } catch (e) {
+    showHostErrors([e.message]);
+  }
+}
+
+function editSnippet(snippet) {
+  editingSnippet = snippet;
+  const form = $("form", snippetDialog);
+  form.reset();
+  $(".title", snippetDialog).textContent = snippet ? `Edit ${snippet.name}` : "New snippet";
+  $(".delete", snippetDialog).hidden = !snippet;
+  $(".error", snippetDialog).hidden = true;
+  if (snippet) {
+    form.name.value = snippet.name;
+    form.command.value = snippet.command;
+    form.run.checked = Boolean(snippet.run);
+  }
+  snippetDialog.showModal();
+}
+
+$("form", snippetDialog).addEventListener("submit", async (e) => {
+  const action = e.submitter && e.submitter.value;
+  if (action === "cancel") return;
+  e.preventDefault();
+  const form = e.target;
+  const error = $(".error", snippetDialog);
+  error.hidden = true;
+  try {
+    let list;
+    if (action === "delete") {
+      const ok = await ask({
+        title: "Delete snippet?",
+        message: `Delete the snippet ${editingSnippet.name}?`,
+        ok: "Delete",
+        danger: true,
+      });
+      if (!ok) return;
+      list = await api("DELETE", `/api/snippets/${encodeURIComponent(editingSnippet.name)}`);
+    } else {
+      list = await api("POST", "/api/snippets", {
+        name: form.name.value.trim(),
+        command: form.command.value.trim(),
+        run: form.run.checked,
+        original: editingSnippet ? editingSnippet.name : null,
+      });
+    }
+    snippetDialog.close();
+    renderSnippets(list);
+  } catch (err) {
+    error.textContent = err.message;
+    error.hidden = false;
+  }
+});
+
 // ---------------------------------------------------------------------------
 
 $("#new-connection").addEventListener("click", openConnect);
 $("#welcome-connect").addEventListener("click", openConnect);
 $("#new-profile").addEventListener("click", () => editProfile(null));
+$("#new-snippet").addEventListener("click", () => editSnippet(null));
 $("#ssh-keys-btn").addEventListener("click", openSshKeys);
 $("#known-hosts-btn").addEventListener("click", openKnownHosts);
 window.addEventListener("beforeunload", (e) => {
@@ -1153,3 +1239,4 @@ window.addEventListener("beforeunload", (e) => {
 });
 loadHosts();
 loadSshKeys();
+loadSnippets();

@@ -31,6 +31,15 @@
       <p id="no-aliases" class="muted small" hidden>No host aliases.</p>
     </section>
 
+    <section>
+      <div class="section-head">
+        <h2>Snippets</h2>
+        <button id="new-snippet" class="icon" title="New snippet" aria-label="New snippet">+</button>
+      </div>
+      <ul id="snippets" class="host-list"></ul>
+      <p id="no-snippets" class="muted small" hidden>No saved snippets yet.</p>
+    </section>
+
     <p id="host-errors" class="error small" hidden></p>
     <div class="sidebar-foot">
       <button id="ssh-keys-btn" class="wide">SSH keys</button>
@@ -210,6 +219,22 @@
     <option value="9600"><option value="19200"><option value="38400"><option value="57600">
     <option value="115200"><option value="230400"><option value="460800"><option value="921600">
   </datalist>
+
+  <dialog id="snippet-dialog">
+    <form method="dialog" class="dialog-form">
+      <h2 class="title">New snippet</h2>
+      <label>Name <input name="name" required maxlength="64" placeholder="e.g. Docker containers" spellcheck="false"></label>
+      <label>Command <textarea name="command" rows="3" required spellcheck="false" placeholder="docker ps --format 'table {{.Names}}\t{{.Status}}'"></textarea></label>
+      <label class="check"><input type="checkbox" name="run"> Run immediately (send Enter after pasting)</label>
+      <p class="error small" hidden></p>
+      <div class="buttons">
+        <button value="ok" class="primary">Save</button>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <span class="grow"></span>
+        <button value="delete" class="danger delete" formnovalidate hidden>Delete</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="keys-dialog">
     <div class="dialog-form">
