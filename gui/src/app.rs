@@ -8,18 +8,20 @@ use std::time::Duration;
 
 use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Stroke};
 use maelstromssh_core::config::{
-    FlowControl, Parity, ProfileStore, Protocol, SerialSettings, SshConfig,
+    forward_spec, parse_forward, FlowControl, ForwardKind, ForwardRule, Parity, ProfileStore,
+    Protocol, SerialSettings, SshConfig,
 };
 use maelstromssh_core::prompt::KiPrompt;
 use maelstromssh_core::serial::{self, PortInfo};
 use maelstromssh_core::session_log::SessionLog;
+use maelstromssh_core::sftp::DirEntry;
 use maelstromssh_core::target::{AuthChoice, Target, TargetArgs};
 use maelstromssh_core::term::Terminal;
 use tokio::sync::mpsc;
 
 use crate::keys::{self, KeyOut};
 use crate::paint::{self, Palette};
-use crate::ssh::{self, Cmd, Evt, Question};
+use crate::ssh::{self, Cmd, Evt, ForwardItem, Question};
 
 /// Startup arguments passed from `main`.
 #[derive(Clone)]
@@ -27,10 +29,14 @@ pub struct LaunchArgs {
     pub target: TargetArgs,
     pub protocol: Protocol,
     pub serial: SerialSettings,
+    pub local: Vec<String>,
+    pub remote: Vec<String>,
+    pub dynamic: Vec<String>,
     pub log: Option<PathBuf>,
 }
 
 const ERROR_RED: Color32 = Color32::from_rgb(240, 80, 80);
+const OK_GREEN: Color32 = Color32::from_rgb(90, 210, 120);
 
 enum State {
     /// The connect form, shown when no target was given (or to change it).
@@ -111,6 +117,7 @@ struct ConnectForm {
     port: String,
     identity: String,
     jump: String,
+    forwards: String,
     /// `None`: auto, or whatever the profile says.
     auth: Option<AuthChoice>,
     serial_baud: String,
@@ -136,6 +143,7 @@ impl Default for ConnectForm {
             port: String::new(),
             identity: String::new(),
             jump: String::new(),
+            forwards: String::new(),
             auth: None,
             serial_baud: s.baud.to_string(),
             serial_data_bits: s.data_bits,
@@ -182,6 +190,17 @@ impl ConnectForm {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
         form.jump = args.jump.clone().unwrap_or_default();
+        let mut fwds = Vec::new();
+        for s in &launch.local {
+            fwds.push(format!("L {s}"));
+        }
+        for s in &launch.remote {
+            fwds.push(format!("R {s}"));
+        }
+        for s in &launch.dynamic {
+            fwds.push(format!("D {s}"));
+        }
+        form.forwards = fwds.join(", ");
         form.auth = args.auth;
         form.serial_baud = launch.serial.baud.to_string();
         form.serial_data_bits = launch.serial.data_bits;
@@ -232,6 +251,7 @@ impl ConnectForm {
                             .collect::<Vec<_>>()
                             .join(",");
                     }
+                    form.forwards = format_forward_list(&target.forwards);
                 }
                 Protocol::Serial => {
                     form.target = target.host.clone();
@@ -263,10 +283,11 @@ impl ConnectForm {
                     .ok_or_else(|| format!("'{p}' is not a valid port"))?,
             ),
         };
+        let extra_forwards = parse_forward_list(&self.forwards)?;
         if self.profile.is_some() {
             let identity = self.identity.trim();
             let jump = self.jump.trim();
-            return TargetArgs {
+            let mut target = TargetArgs {
                 target: None,
                 port,
                 identity: (!identity.is_empty()).then(|| identity.into()),
@@ -275,7 +296,12 @@ impl ConnectForm {
                 jump: (!jump.is_empty()).then(|| jump.to_string()),
             }
             .resolve_any()
-            .map_err(|e| e.to_string());
+            .map_err(|e| e.to_string())?;
+            if !extra_forwards.is_empty() && target.protocol != Protocol::Ssh {
+                return Err("port forwards need an SSH connection".into());
+            }
+            target.forwards.extend(extra_forwards);
+            return Ok(target);
         }
 
         let target = self.target.trim();
@@ -286,7 +312,7 @@ impl ConnectForm {
                 }
                 let identity = self.identity.trim();
                 let jump = self.jump.trim();
-                TargetArgs {
+                let mut resolved = TargetArgs {
                     target: Some(target.to_string()),
                     port,
                     identity: (!identity.is_empty()).then(|| identity.into()),
@@ -295,7 +321,9 @@ impl ConnectForm {
                     jump: (!jump.is_empty()).then(|| jump.to_string()),
                 }
                 .resolve_any()
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+                resolved.forwards.extend(extra_forwards);
+                Ok(resolved)
             }
             Protocol::Serial => {
                 if target.is_empty() {
@@ -341,6 +369,61 @@ impl ConnectForm {
             Some(Some(PathBuf::from(trimmed)))
         }
     }
+}
+
+fn parse_forward_list(input: &str) -> Result<Vec<ForwardRule>, String> {
+    let mut rules = Vec::new();
+    for raw in input.split(',') {
+        let item = raw.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let (kind, spec) = if let Some(rest) = item
+            .strip_prefix("-L ")
+            .or_else(|| item.strip_prefix("L "))
+            .or_else(|| item.strip_prefix("local "))
+            .or_else(|| item.strip_prefix("local:"))
+        {
+            (ForwardKind::Local, rest.trim())
+        } else if let Some(rest) = item
+            .strip_prefix("-R ")
+            .or_else(|| item.strip_prefix("R "))
+            .or_else(|| item.strip_prefix("remote "))
+            .or_else(|| item.strip_prefix("remote:"))
+        {
+            (ForwardKind::Remote, rest.trim())
+        } else if let Some(rest) = item
+            .strip_prefix("-D ")
+            .or_else(|| item.strip_prefix("D "))
+            .or_else(|| item.strip_prefix("dynamic "))
+            .or_else(|| item.strip_prefix("dynamic:"))
+            .or_else(|| item.strip_prefix("socks5 "))
+        {
+            (ForwardKind::Dynamic, rest.trim())
+        } else if item.split(':').count() <= 2 {
+            (ForwardKind::Dynamic, item)
+        } else {
+            (ForwardKind::Local, item)
+        };
+        let rule = parse_forward(spec, kind).map_err(|e| e.to_string())?;
+        rules.push(rule);
+    }
+    Ok(rules)
+}
+
+fn format_forward_list(rules: &[ForwardRule]) -> String {
+    rules
+        .iter()
+        .map(|r| {
+            let prefix = match r.kind {
+                ForwardKind::Local => "L",
+                ForwardKind::Remote => "R",
+                ForwardKind::Dynamic => "D",
+            };
+            format!("{prefix} {}", forward_spec(r))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 const AUTH_CHOICES: [(AuthChoice, &str); 5] = [
@@ -391,6 +474,23 @@ pub struct GuiApp {
     pointer_cell: Option<(u16, u16)>,
     drag_button: Option<u8>,
     quit: bool,
+
+    // In-session SSH tool windows (SFTP & Port Forwards)
+    show_sftp: bool,
+    sftp_path: String,
+    sftp_path_input: String,
+    sftp_entries: Vec<DirEntry>,
+    sftp_selected: Option<usize>,
+    sftp_status: Option<(String, bool)>,
+    sftp_local_path: String,
+    sftp_mkdir_name: String,
+    sftp_rename_to: String,
+
+    show_forwards: bool,
+    forwards: Vec<ForwardItem>,
+    forward_kind: ForwardKind,
+    forward_spec: String,
+    forward_status: Option<(String, bool)>,
 }
 
 impl GuiApp {
@@ -435,6 +535,20 @@ impl GuiApp {
             pointer_cell: None,
             drag_button: None,
             quit: false,
+            show_sftp: false,
+            sftp_path: String::new(),
+            sftp_path_input: String::new(),
+            sftp_entries: Vec::new(),
+            sftp_selected: None,
+            sftp_status: None,
+            sftp_local_path: String::new(),
+            sftp_mkdir_name: String::new(),
+            sftp_rename_to: String::new(),
+            show_forwards: false,
+            forwards: Vec::new(),
+            forward_kind: ForwardKind::Local,
+            forward_spec: String::new(),
+            forward_status: None,
         }
     }
 
@@ -464,6 +578,16 @@ impl GuiApp {
                 }
             }
         };
+        self.show_sftp = false;
+        self.sftp_path.clear();
+        self.sftp_path_input.clear();
+        self.sftp_entries.clear();
+        self.sftp_selected = None;
+        self.sftp_status = None;
+        self.show_forwards = false;
+        self.forwards.clear();
+        self.forward_status = None;
+
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (evt_tx, evt_rx) = mpsc::unbounded_channel();
         self.handle.spawn(ssh::connect_and_run(
@@ -477,6 +601,16 @@ impl GuiApp {
         self.evt_rx = Some(evt_rx);
         self.term = Terminal::new(self.cols, self.rows);
         self.state = State::Connecting;
+    }
+
+    fn join_remote(&self, name: &str) -> String {
+        if name.starts_with('/') || self.sftp_path.is_empty() || self.sftp_path == "." {
+            name.to_string()
+        } else if self.sftp_path.ends_with('/') {
+            format!("{}{name}", self.sftp_path)
+        } else {
+            format!("{}/{name}", self.sftp_path)
+        }
     }
 }
 
@@ -504,8 +638,32 @@ impl eframe::App for GuiApp {
                         self.term.feed(&data);
                         responses.extend(self.term.take_responses());
                     }
+                    Evt::Forwards { list, status } => {
+                        self.forwards = list;
+                        if status.is_some() {
+                            self.forward_status = status;
+                        }
+                    }
+                    Evt::SftpListed {
+                        path,
+                        entries,
+                        status,
+                    } => {
+                        self.sftp_path = path.clone();
+                        self.sftp_path_input = path;
+                        self.sftp_entries = entries;
+                        self.sftp_selected = None;
+                        if status.is_some() {
+                            self.sftp_status = status;
+                        }
+                    }
+                    Evt::SftpStatus { message, is_error } => {
+                        self.sftp_status = Some((message, is_error));
+                    }
                     Evt::Closed(msg) => {
                         self.log = None;
+                        self.show_sftp = false;
+                        self.show_forwards = false;
                         self.state = State::Failed(msg);
                     }
                 }
@@ -741,6 +899,14 @@ impl GuiApp {
                         );
                         ui.end_row();
 
+                        ui.label("Port forwards");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut form.forwards)
+                                .hint_text("optional, e.g. L 8080:localhost:80, D 1080")
+                                .desired_width(280.0),
+                        );
+                        ui.end_row();
+
                         ui.label("Authentication");
                         let is_profile = form.profile.is_some();
                         egui::ComboBox::from_id_salt("auth")
@@ -959,7 +1125,7 @@ impl GuiApp {
 
     fn ui_running(&mut self, ui: &mut egui::Ui) {
         let full = ui.available_rect_before_wrap();
-        let status_h = 20.0;
+        let status_h = 22.0;
         let grid_rect = Rect::from_min_max(
             full.min,
             pos2(full.max.x, (full.max.y - status_h).max(full.min.y)),
@@ -985,22 +1151,329 @@ impl GuiApp {
         self.char_w = cw;
         self.row_h = rh;
 
+        let ctx = ui.ctx().clone();
+        if self.show_sftp {
+            self.ui_sftp_window(&ctx);
+        }
+        if self.show_forwards {
+            self.ui_forwards_window(&ctx);
+        }
+
         self.handle_input(ui);
         self.paint(ui, status_rect);
     }
 
+    fn ui_sftp_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_sftp;
+        egui::Window::new("SFTP File Browser")
+            .open(&mut open)
+            .default_size([560.0, 420.0])
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Up (..)").clicked()
+                        && !self.sftp_path.is_empty()
+                        && self.sftp_path != "/"
+                    {
+                        let parent = self.join_remote("..");
+                        if let Some(tx) = &self.cmd_tx {
+                            let _ = tx.send(Cmd::SftpList { path: parent });
+                        }
+                    }
+                    let path_edit = ui.add(
+                        egui::TextEdit::singleline(&mut self.sftp_path_input)
+                            .hint_text("/remote/path")
+                            .desired_width(300.0),
+                    );
+                    let enter =
+                        path_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("Go").clicked() || enter {
+                        let target = self.sftp_path_input.trim().to_string();
+                        if let Some(tx) = &self.cmd_tx {
+                            let _ = tx.send(Cmd::SftpList { path: target });
+                        }
+                    }
+                    if ui.button("Refresh").clicked() {
+                        let cur = if self.sftp_path.is_empty() {
+                            ".".to_string()
+                        } else {
+                            self.sftp_path.clone()
+                        };
+                        if let Some(tx) = &self.cmd_tx {
+                            let _ = tx.send(Cmd::SftpList { path: cur });
+                        }
+                    }
+                });
+
+                ui.separator();
+
+                let mut cd_into: Option<String> = None;
+                egui::ScrollArea::vertical()
+                    .max_height(210.0)
+                    .show(ui, |ui| {
+                        if self.sftp_entries.is_empty() {
+                            ui.label("(empty directory)");
+                        }
+                        for (i, entry) in self.sftp_entries.iter().enumerate() {
+                            let tag = if entry.is_dir {
+                                "[DIR]"
+                            } else if entry.is_symlink {
+                                "[LNK]"
+                            } else {
+                                "     "
+                            };
+                            let suffix = if entry.is_dir { "/" } else { "" };
+                            let label = if entry.is_dir {
+                                format!("{tag} {}{suffix}", entry.name)
+                            } else {
+                                format!("{tag} {}  ({} B)", entry.name, entry.size)
+                            };
+                            let selected = self.sftp_selected == Some(i);
+                            let resp = ui.selectable_label(selected, label);
+                            if resp.clicked() {
+                                self.sftp_selected = Some(i);
+                                self.sftp_rename_to = entry.name.clone();
+                                if !entry.is_dir {
+                                    self.sftp_local_path = format!("./{}", entry.name);
+                                }
+                            }
+                            if resp.double_clicked() && entry.is_dir {
+                                cd_into = Some(self.join_remote(&entry.name));
+                            }
+                        }
+                    });
+
+                if let Some(next_dir) = cd_into {
+                    if let Some(tx) = &self.cmd_tx {
+                        let _ = tx.send(Cmd::SftpList { path: next_dir });
+                    }
+                }
+
+                ui.separator();
+
+                // Selected entry actions
+                if let Some(sel_idx) = self.sftp_selected {
+                    if let Some(entry) = self.sftp_entries.get(sel_idx).cloned() {
+                        ui.horizontal(|ui| {
+                            ui.strong(format!("Selected: {}", entry.name));
+                            if entry.is_dir && ui.button("Open folder").clicked() {
+                                let next = self.join_remote(&entry.name);
+                                if let Some(tx) = &self.cmd_tx {
+                                    let _ = tx.send(Cmd::SftpList { path: next });
+                                }
+                            }
+                            if ui.button("Delete").clicked() {
+                                let full = self.join_remote(&entry.name);
+                                if let Some(tx) = &self.cmd_tx {
+                                    let _ = tx.send(Cmd::SftpRemove {
+                                        path: full,
+                                        is_dir: entry.is_dir,
+                                    });
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Rename to:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.sftp_rename_to)
+                                    .desired_width(180.0),
+                            );
+                            if ui.button("Rename").clicked() {
+                                let new_name = self.sftp_rename_to.trim();
+                                if !new_name.is_empty() && new_name != entry.name {
+                                    let from = self.join_remote(&entry.name);
+                                    let to = self.join_remote(new_name);
+                                    if let Some(tx) = &self.cmd_tx {
+                                        let _ = tx.send(Cmd::SftpRename { from, to });
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+
+                ui.horizontal(|ui| {
+                    ui.label("Local file path:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.sftp_local_path)
+                            .hint_text("./filename or /path/to/local/file")
+                            .desired_width(220.0),
+                    );
+                    let can_download = self
+                        .sftp_selected
+                        .and_then(|i| self.sftp_entries.get(i))
+                        .is_some_and(|e| !e.is_dir);
+                    if ui
+                        .add_enabled(can_download, egui::Button::new("Download selected"))
+                        .clicked()
+                    {
+                        if let Some(entry) =
+                            self.sftp_selected.and_then(|i| self.sftp_entries.get(i))
+                        {
+                            let local = if self.sftp_local_path.trim().is_empty() {
+                                PathBuf::from(&entry.name)
+                            } else {
+                                PathBuf::from(self.sftp_local_path.trim())
+                            };
+                            let remote = self.join_remote(&entry.name);
+                            if let Some(tx) = &self.cmd_tx {
+                                let _ = tx.send(Cmd::SftpDownload { remote, local });
+                            }
+                        }
+                    }
+                    if ui.button("Upload to current dir").clicked() {
+                        let local_str = self.sftp_local_path.trim();
+                        if !local_str.is_empty() {
+                            let local = PathBuf::from(local_str);
+                            if let Some(fname) = local.file_name().and_then(|n| n.to_str()) {
+                                let remote = self.join_remote(fname);
+                                if let Some(tx) = &self.cmd_tx {
+                                    let _ = tx.send(Cmd::SftpUpload { local, remote });
+                                }
+                            } else {
+                                self.sftp_status =
+                                    Some(("Enter a valid local file path".into(), true));
+                            }
+                        }
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("New folder:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.sftp_mkdir_name)
+                            .hint_text("folder name")
+                            .desired_width(180.0),
+                    );
+                    if ui.button("Create folder").clicked() {
+                        let name = self.sftp_mkdir_name.trim().to_string();
+                        if !name.is_empty() {
+                            let full = self.join_remote(&name);
+                            self.sftp_mkdir_name.clear();
+                            if let Some(tx) = &self.cmd_tx {
+                                let _ = tx.send(Cmd::SftpMkdir { path: full });
+                            }
+                        }
+                    }
+                });
+
+                if let Some((ref msg, is_err)) = self.sftp_status {
+                    ui.add_space(4.0);
+                    let color = if is_err { ERROR_RED } else { OK_GREEN };
+                    ui.colored_label(color, msg.as_str());
+                }
+            });
+        self.show_sftp = open;
+    }
+
+    fn ui_forwards_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_forwards;
+        egui::Window::new("Port Forwards")
+            .open(&mut open)
+            .default_size([480.0, 280.0])
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("fwd_kind")
+                        .selected_text(match self.forward_kind {
+                            ForwardKind::Local => "Local (-L)",
+                            ForwardKind::Remote => "Remote (-R)",
+                            ForwardKind::Dynamic => "Dynamic / SOCKS5 (-D)",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.forward_kind,
+                                ForwardKind::Local,
+                                "Local (-L)",
+                            );
+                            ui.selectable_value(
+                                &mut self.forward_kind,
+                                ForwardKind::Remote,
+                                "Remote (-R)",
+                            );
+                            ui.selectable_value(
+                                &mut self.forward_kind,
+                                ForwardKind::Dynamic,
+                                "Dynamic / SOCKS5 (-D)",
+                            );
+                        });
+                    let hint = match self.forward_kind {
+                        ForwardKind::Local | ForwardKind::Remote => "[bind:]port:host:hostport",
+                        ForwardKind::Dynamic => "[bind:]port",
+                    };
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut self.forward_spec)
+                            .hint_text(hint)
+                            .desired_width(200.0),
+                    );
+                    let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("Add").clicked() || enter {
+                        let spec = self.forward_spec.trim().to_string();
+                        if !spec.is_empty() {
+                            self.forward_spec.clear();
+                            if let Some(tx) = &self.cmd_tx {
+                                let _ = tx.send(Cmd::ForwardAdd {
+                                    kind: self.forward_kind,
+                                    spec,
+                                });
+                            }
+                        }
+                    }
+                });
+
+                ui.separator();
+
+                let mut to_stop = None;
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        if self.forwards.is_empty() {
+                            ui.label("No active port forwards.");
+                        }
+                        for f in &self.forwards {
+                            ui.horizontal(|ui| {
+                                let kind_str = match f.kind {
+                                    ForwardKind::Local => "LOCAL",
+                                    ForwardKind::Remote => "REMOTE",
+                                    ForwardKind::Dynamic => "DYNAMIC",
+                                };
+                                ui.monospace(format!("[{kind_str}] {} -> {}", f.listen, f.dest));
+                                if ui.small_button("Stop").clicked() {
+                                    to_stop = Some(f.id);
+                                }
+                            });
+                        }
+                    });
+
+                if let Some(id) = to_stop {
+                    if let Some(tx) = &self.cmd_tx {
+                        let _ = tx.send(Cmd::ForwardStop { id });
+                    }
+                }
+
+                if let Some((ref msg, is_err)) = self.forward_status {
+                    ui.add_space(4.0);
+                    let color = if is_err { ERROR_RED } else { OK_GREEN };
+                    ui.colored_label(color, msg.as_str());
+                }
+            });
+        self.show_forwards = open;
+    }
+
     fn handle_input(&mut self, ui: &mut egui::Ui) {
+        let kb_captured = ui.ctx().egui_wants_keyboard_input();
+        let ptr_captured = ui.ctx().is_pointer_over_egui();
         let events: Vec<egui::Event> = ui.input(|i| i.events.clone());
         let app_cursor = self.term.application_cursor_keys();
         for evt in events {
             match evt {
-                egui::Event::Text(text) => self.send_data(text.into_bytes()),
+                egui::Event::Text(text) if !kb_captured => self.send_data(text.into_bytes()),
                 // egui's winit layer turns Ctrl+C/Ctrl+X into clipboard
                 // commands and never emits the Key events, so translate them
                 // back into the control bytes a terminal expects.
-                egui::Event::Copy => self.send_data(vec![0x03]),
-                egui::Event::Cut => self.send_data(vec![0x18]),
-                egui::Event::Paste(text) => {
+                egui::Event::Copy if !kb_captured => self.send_data(vec![0x03]),
+                egui::Event::Cut if !kb_captured => self.send_data(vec![0x18]),
+                egui::Event::Paste(text) if !kb_captured => {
                     let mut out = Vec::new();
                     if self.term.bracketed_paste() {
                         out.extend_from_slice(b"\x1b[200~");
@@ -1016,25 +1489,27 @@ impl GuiApp {
                     pressed: true,
                     modifiers,
                     ..
-                } => match keys::encode(key, modifiers, app_cursor) {
+                } if !kb_captured => match keys::encode(key, modifiers, app_cursor) {
                     KeyOut::Bytes(b) => self.send_data(b),
                     KeyOut::Quit => self.quit = true,
                     KeyOut::Ignore => {}
                 },
-                egui::Event::MouseWheel { delta, .. } => self.handle_wheel(delta),
+                egui::Event::MouseWheel { delta, .. } if !ptr_captured => {
+                    self.handle_wheel(delta);
+                }
                 egui::Event::PointerButton {
                     pos,
                     button,
                     pressed,
                     modifiers,
-                } => self.handle_pointer(pos, button, pressed, modifiers),
-                egui::Event::PointerMoved(pos) => self.handle_motion(pos),
+                } if !ptr_captured => self.handle_pointer(pos, button, pressed, modifiers),
+                egui::Event::PointerMoved(pos) if !ptr_captured => self.handle_motion(pos),
                 egui::Event::PointerGone => self.drag_button = None,
                 _ => {}
             }
         }
 
-        if !self.term.mouse_sgr() {
+        if !self.term.mouse_sgr() && !ptr_captured {
             let dy = ui.input(|i| i.smooth_scroll_delta.y);
             self.pending_scroll += dy;
             let lines = (self.pending_scroll / self.row_h).floor() as i64;
@@ -1217,29 +1692,50 @@ impl GuiApp {
             Color32::from_gray(180),
         );
 
-        let supports_break = matches!(
-            self.target.as_ref().map(|t| t.protocol),
-            Some(Protocol::Serial | Protocol::Telnet)
+        let protocol = self.target.as_ref().map(|t| t.protocol);
+        let btn_rect = Rect::from_min_max(
+            pos2((rect.max.x - 240.0).max(rect.min.x), rect.min.y),
+            rect.max,
         );
-        if supports_break {
-            let btn_rect = Rect::from_min_max(
-                pos2((rect.max.x - 100.0).max(rect.min.x), rect.min.y),
-                rect.max,
-            );
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(btn_rect)
-                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
-                |ui| {
-                    ui.add_space(6.0);
-                    if ui.small_button("Send break").clicked() {
-                        if let Some(tx) = &self.cmd_tx {
-                            let _ = tx.send(Cmd::Break);
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(btn_rect)
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            |ui| {
+                ui.add_space(6.0);
+                match protocol {
+                    Some(Protocol::Ssh) => {
+                        let fwd_label = if self.forwards.is_empty() {
+                            "Forwards".to_string()
+                        } else {
+                            format!("Forwards ({})", self.forwards.len())
+                        };
+                        if ui.small_button(fwd_label).clicked() {
+                            self.show_forwards = !self.show_forwards;
+                        }
+                        if ui.small_button("Files (SFTP)").clicked() {
+                            self.show_sftp = !self.show_sftp;
+                            if self.show_sftp && self.sftp_path.is_empty() {
+                                if let Some(tx) = &self.cmd_tx {
+                                    let _ = tx.send(Cmd::SftpList {
+                                        path: ".".to_string(),
+                                    });
+                                }
+                            }
                         }
                     }
-                },
-            );
-        }
+                    Some(Protocol::Serial | Protocol::Telnet) => {
+                        let clicked = ui.small_button("Send break").clicked();
+                        if clicked {
+                            if let Some(tx) = &self.cmd_tx {
+                                let _ = tx.send(Cmd::Break);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            },
+        );
     }
 }
 
@@ -1276,5 +1772,27 @@ fn answer(state: State, accept: bool) {
             let _ = reply.send(accept.then_some(answers));
         }
         State::Setup(_) | State::Connecting | State::Running | State::Failed(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forward_list_round_trips_local_remote_dynamic() {
+        let parsed =
+            parse_forward_list("L 8080:localhost:80, R 9000:127.0.0.1:3000, D 1080").unwrap();
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].kind, ForwardKind::Local);
+        assert_eq!(parsed[0].bind_port, 8080);
+        assert_eq!(parsed[1].kind, ForwardKind::Remote);
+        assert_eq!(parsed[1].bind_port, 9000);
+        assert_eq!(parsed[2].kind, ForwardKind::Dynamic);
+        assert_eq!(parsed[2].bind_port, 1080);
+
+        let formatted = format_forward_list(&parsed);
+        let reparsed = parse_forward_list(&formatted).unwrap();
+        assert_eq!(reparsed, parsed);
     }
 }

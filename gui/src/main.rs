@@ -43,6 +43,15 @@ struct Cli {
     raw: bool,
     #[command(flatten)]
     line: LineArgs,
+    /// Local forward: [bind:]port:host:hostport (repeatable).
+    #[arg(short = 'L', long = "local-forward", value_name = "SPEC", conflicts_with_all = ["serial", "telnet", "raw"])]
+    local: Vec<String>,
+    /// Remote forward: [bind:]port:host:hostport (repeatable).
+    #[arg(short = 'R', long = "remote-forward", value_name = "SPEC", conflicts_with_all = ["serial", "telnet", "raw"])]
+    remote: Vec<String>,
+    /// Dynamic (SOCKS5) forward: [bind:]port (repeatable).
+    #[arg(short = 'D', long = "dynamic-forward", value_name = "SPEC", conflicts_with_all = ["serial", "telnet", "raw"])]
+    dynamic: Vec<String>,
     /// Save everything the session prints to FILE (appended). A folder gets a
     /// dated file; &H, &P, &Y, &M, &D, &T in the name become the host, port,
     /// date and time.
@@ -102,6 +111,9 @@ fn main() -> Result<()> {
         target: cli.target,
         protocol,
         serial: cli.line.into(),
+        local: cli.local,
+        remote: cli.remote,
+        dynamic: cli.dynamic,
         log: cli.log,
     };
     let term_type = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());

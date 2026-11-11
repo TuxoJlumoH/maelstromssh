@@ -216,7 +216,7 @@ impl Default for AuthMethod {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForwardRule {
     pub kind: ForwardKind,
     pub bind_host: String,

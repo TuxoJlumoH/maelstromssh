@@ -19,6 +19,7 @@ pub use russh_sftp::client::SftpSession;
 const BUF_SIZE: usize = 64 * 1024;
 
 /// A directory entry in a front-end-friendly shape (no `russh` types).
+#[derive(Debug, Clone)]
 pub struct DirEntry {
     pub name: String,
     /// A directory, or a symlink that points to one.

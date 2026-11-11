@@ -6,16 +6,28 @@
 //!
 //! [`Terminal`]: maelstromssh_core::term::Terminal
 
+use std::path::PathBuf;
 use std::sync::{mpsc as std_mpsc, Arc};
 
-use maelstromssh_core::config::Protocol;
+use maelstromssh_core::config::{forward_spec, parse_forward, ForwardKind, ForwardRule, Protocol};
 use maelstromssh_core::prompt::{KiPrompt, Prompter};
 use maelstromssh_core::serial;
+use maelstromssh_core::sftp::{self, DirEntry, SftpSession};
 use maelstromssh_core::ssh::{ChannelMsg, KnownHosts, Session};
 use maelstromssh_core::target::Target;
 use maelstromssh_core::tcp::TcpLine;
+use maelstromssh_core::tunnel::{ActiveForward, ForwardInfo, Forwarder};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
+
+#[derive(Clone)]
+pub struct ForwardItem {
+    pub id: u64,
+    pub kind: ForwardKind,
+    pub spec: String,
+    pub listen: String,
+    pub dest: String,
+}
 
 /// A command from the UI thread to the session task.
 pub enum Cmd {
@@ -25,6 +37,22 @@ pub enum Cmd {
     WindowChange { cols: u32, rows: u32 },
     /// Send a serial or Telnet break signal.
     Break,
+    /// Start a live port forward on the SSH session.
+    ForwardAdd { kind: ForwardKind, spec: String },
+    /// Stop a running port forward by id.
+    ForwardStop { id: u64 },
+    /// List a remote directory over SFTP.
+    SftpList { path: String },
+    /// Create a remote directory over SFTP.
+    SftpMkdir { path: String },
+    /// Remove a remote file or directory over SFTP.
+    SftpRemove { path: String, is_dir: bool },
+    /// Rename a remote file or directory over SFTP.
+    SftpRename { from: String, to: String },
+    /// Download a remote file to a local path over SFTP.
+    SftpDownload { remote: String, local: PathBuf },
+    /// Upload a local file to a remote path over SFTP.
+    SftpUpload { local: PathBuf, remote: String },
 }
 
 /// An event from the SSH task to the UI thread.
@@ -35,6 +63,19 @@ pub enum Evt {
     Ready,
     /// Output from the shell (stdout/stderr merged).
     Data(Vec<u8>),
+    /// Updated list of active port forwards (plus optional status/error message).
+    Forwards {
+        list: Vec<ForwardItem>,
+        status: Option<(String, bool)>,
+    },
+    /// Updated SFTP directory listing.
+    SftpListed {
+        path: String,
+        entries: Vec<DirEntry>,
+        status: Option<(String, bool)>,
+    },
+    /// Status or error message for an SFTP operation.
+    SftpStatus { message: String, is_error: bool },
     /// The connection failed or the channel closed.
     Closed(String),
 }
@@ -138,7 +179,17 @@ pub async fn connect_and_run(
             .await;
 
             match result {
-                Ok(session) => run_connected(session, cmd_rx, &evt_tx, &notify, &term_type).await,
+                Ok(session) => {
+                    run_connected(
+                        session,
+                        target.forwards,
+                        cmd_rx,
+                        &evt_tx,
+                        &notify,
+                        &term_type,
+                    )
+                    .await
+                }
                 Err(e) => {
                     let msg = match e.hint() {
                         Some(hint) => format!("{e}\nHint: {hint}"),
@@ -156,9 +207,110 @@ pub async fn connect_and_run(
     }
 }
 
+struct RunningForward {
+    item: ForwardItem,
+    active: ActiveForward,
+}
+
+struct SshTools {
+    session: Session,
+    forwarder: Forwarder,
+    forwards: Vec<RunningForward>,
+    next_id: u64,
+    sftp: Option<SftpSession>,
+    sftp_dir: String,
+}
+
+impl SshTools {
+    fn new(mut session: Session) -> Self {
+        let forwarder = Forwarder::new(&mut session);
+        Self {
+            session,
+            forwarder,
+            forwards: Vec::new(),
+            next_id: 1,
+            sftp: None,
+            sftp_dir: ".".to_string(),
+        }
+    }
+
+    async fn start_rule(&mut self, rule: &ForwardRule) -> Result<String, String> {
+        let active = self
+            .forwarder
+            .start(rule)
+            .await
+            .map_err(|e| e.to_string())?;
+        let summary = active.info.to_string();
+        let (listen, dest) = match &active.info {
+            ForwardInfo::Local { local, dest } => (local.to_string(), dest.clone()),
+            ForwardInfo::Remote { port, dest } => (format!("server :{port}"), dest.clone()),
+            ForwardInfo::Dynamic { local } => (local.to_string(), "SOCKS5".to_string()),
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        self.forwards.push(RunningForward {
+            item: ForwardItem {
+                id,
+                kind: rule.kind,
+                spec: forward_spec(rule),
+                listen,
+                dest,
+            },
+            active,
+        });
+        Ok(summary)
+    }
+
+    fn forward_items(&self) -> Vec<ForwardItem> {
+        self.forwards.iter().map(|f| f.item.clone()).collect()
+    }
+
+    async fn stop_forward(&mut self, id: u64) -> Result<String, String> {
+        let Some(pos) = self.forwards.iter().position(|f| f.item.id == id) else {
+            return Err("forward not found".into());
+        };
+        let f = self.forwards.remove(pos);
+        let spec = f.item.spec;
+        f.active.stop().await.map_err(|e| e.to_string())?;
+        Ok(format!("Stopped forward {spec}"))
+    }
+
+    async fn stop_all_forwards(&mut self) {
+        for f in self.forwards.drain(..) {
+            let _ = f.active.stop().await;
+        }
+    }
+
+    async fn ensure_sftp(&mut self) -> Result<&SftpSession, String> {
+        if self.sftp.is_none() {
+            let s = sftp::open(&self.session).await.map_err(|e| e.to_string())?;
+            self.sftp = Some(s);
+        }
+        Ok(self.sftp.as_ref().expect("sftp initialized"))
+    }
+
+    async fn list_dir(&mut self, path: &str) -> Result<(String, Vec<DirEntry>), String> {
+        let target = if path.is_empty() { "." } else { path };
+        let sftp = self.ensure_sftp().await?;
+        let canon = sftp::canonicalize(sftp, target)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut entries = sftp::list(sftp, &canon).await.map_err(|e| e.to_string())?;
+        entries.retain(|e| e.name != "." && e.name != "..");
+        entries.sort_by(|a, b| {
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        self.sftp_dir = canon.clone();
+        Ok((canon, entries))
+    }
+}
+
 /// Drives an already-connected session's shell channel.
 async fn run_connected(
     session: Session,
+    initial_forwards: Vec<ForwardRule>,
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
     evt_tx: &mpsc::UnboundedSender<Evt>,
     notify: &egui::Context,
@@ -174,7 +326,18 @@ async fn run_connected(
             return;
         }
     };
+    let mut tools = SshTools::new(session);
+    let mut init_status = None;
+    for rule in &initial_forwards {
+        if let Err(e) = tools.start_rule(rule).await {
+            init_status = Some((format!("forward {rule}: {e}"), true));
+        }
+    }
     let _ = evt_tx.send(Evt::Ready);
+    let _ = evt_tx.send(Evt::Forwards {
+        list: tools.forward_items(),
+        status: init_status,
+    });
     notify.request_repaint();
 
     loop {
@@ -202,13 +365,190 @@ async fn run_connected(
                         channel.window_change(cols, rows, 0, 0).await.ok();
                     }
                     Some(Cmd::Break) => {}
+                    Some(Cmd::ForwardAdd { kind, spec }) => {
+                        let status = match parse_forward(spec.trim(), kind) {
+                            Ok(rule) => match tools.start_rule(&rule).await {
+                                Ok(msg) => Some((msg, false)),
+                                Err(e) => Some((e, true)),
+                            },
+                            Err(e) => Some((e.to_string(), true)),
+                        };
+                        let _ = evt_tx.send(Evt::Forwards {
+                            list: tools.forward_items(),
+                            status,
+                        });
+                        notify.request_repaint();
+                    }
+                    Some(Cmd::ForwardStop { id }) => {
+                        let status = match tools.stop_forward(id).await {
+                            Ok(msg) => Some((msg, false)),
+                            Err(e) => Some((e, true)),
+                        };
+                        let _ = evt_tx.send(Evt::Forwards {
+                            list: tools.forward_items(),
+                            status,
+                        });
+                        notify.request_repaint();
+                    }
+                    Some(Cmd::SftpList { path }) => {
+                        match tools.list_dir(&path).await {
+                            Ok((canon, entries)) => {
+                                let _ = evt_tx.send(Evt::SftpListed {
+                                    path: canon,
+                                    entries,
+                                    status: None,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(Evt::SftpStatus {
+                                    message: e,
+                                    is_error: true,
+                                });
+                            }
+                        }
+                        notify.request_repaint();
+                    }
+                    Some(Cmd::SftpMkdir { path }) => {
+                        let res = async {
+                            let sftp = tools.ensure_sftp().await?;
+                            sftp::create_dir(sftp, &path)
+                                .await
+                                .map_err(|e| e.to_string())
+                        }.await;
+                        match res {
+                            Ok(()) => {
+                                let cur = tools.sftp_dir.clone();
+                                if let Ok((canon, entries)) = tools.list_dir(&cur).await {
+                                    let _ = evt_tx.send(Evt::SftpListed {
+                                        path: canon,
+                                        entries,
+                                        status: Some((format!("Created folder {path}"), false)),
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(Evt::SftpStatus {
+                                    message: format!("mkdir failed: {e}"),
+                                    is_error: true,
+                                });
+                            }
+                        }
+                        notify.request_repaint();
+                    }
+                    Some(Cmd::SftpRemove { path, is_dir }) => {
+                        let res = async {
+                            let sftp = tools.ensure_sftp().await?;
+                            if is_dir {
+                                sftp::remove_dir(sftp, &path).await.map_err(|e| e.to_string())
+                            } else {
+                                sftp::remove_file(sftp, &path).await.map_err(|e| e.to_string())
+                            }
+                        }.await;
+                        match res {
+                            Ok(()) => {
+                                let cur = tools.sftp_dir.clone();
+                                if let Ok((canon, entries)) = tools.list_dir(&cur).await {
+                                    let _ = evt_tx.send(Evt::SftpListed {
+                                        path: canon,
+                                        entries,
+                                        status: Some((format!("Deleted {path}"), false)),
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(Evt::SftpStatus {
+                                    message: format!("Delete failed: {e}"),
+                                    is_error: true,
+                                });
+                            }
+                        }
+                        notify.request_repaint();
+                    }
+                    Some(Cmd::SftpRename { from, to }) => {
+                        let res = async {
+                            let sftp = tools.ensure_sftp().await?;
+                            sftp::rename(sftp, &from, &to).await.map_err(|e| e.to_string())
+                        }.await;
+                        match res {
+                            Ok(()) => {
+                                let cur = tools.sftp_dir.clone();
+                                if let Ok((canon, entries)) = tools.list_dir(&cur).await {
+                                    let _ = evt_tx.send(Evt::SftpListed {
+                                        path: canon,
+                                        entries,
+                                        status: Some((format!("Renamed to {to}"), false)),
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(Evt::SftpStatus {
+                                    message: format!("Rename failed: {e}"),
+                                    is_error: true,
+                                });
+                            }
+                        }
+                        notify.request_repaint();
+                    }
+                    Some(Cmd::SftpDownload { remote, local }) => {
+                        let res = async {
+                            let sftp = tools.ensure_sftp().await?;
+                            sftp::get(sftp, &remote, &local).await.map_err(|e| e.to_string())
+                        }.await;
+                        match res {
+                            Ok(bytes) => {
+                                let _ = evt_tx.send(Evt::SftpStatus {
+                                    message: format!(
+                                        "Downloaded {} ({bytes} B)",
+                                        local.display()
+                                    ),
+                                    is_error: false,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(Evt::SftpStatus {
+                                    message: format!("Download failed: {e}"),
+                                    is_error: true,
+                                });
+                            }
+                        }
+                        notify.request_repaint();
+                    }
+                    Some(Cmd::SftpUpload { local, remote }) => {
+                        let res = async {
+                            let sftp = tools.ensure_sftp().await?;
+                            sftp::put(sftp, &local, &remote).await.map_err(|e| e.to_string())
+                        }.await;
+                        match res {
+                            Ok(bytes) => {
+                                let cur = tools.sftp_dir.clone();
+                                if let Ok((canon, entries)) = tools.list_dir(&cur).await {
+                                    let _ = evt_tx.send(Evt::SftpListed {
+                                        path: canon,
+                                        entries,
+                                        status: Some((
+                                            format!("Uploaded {remote} ({bytes} B)"),
+                                            false,
+                                        )),
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(Evt::SftpStatus {
+                                    message: format!("Upload failed: {e}"),
+                                    is_error: true,
+                                });
+                            }
+                        }
+                        notify.request_repaint();
+                    }
                     None => break, // UI dropped the sender: shut down
                 }
             }
         }
     }
 
-    let _ = session.disconnect().await;
+    tools.stop_all_forwards().await;
+    let _ = tools.session.disconnect().await;
 }
 
 async fn run_serial(
@@ -270,11 +610,11 @@ async fn run_serial(
                         break;
                     }
                 }
-                Some(Cmd::WindowChange { .. }) => {}
                 Some(Cmd::Break) => {
                     let brk = breaker.clone();
                     let _ = tokio::task::spawn_blocking(move || brk.send()).await;
                 }
+                Some(_) => {}
                 None => break,
             },
         }
@@ -351,6 +691,7 @@ async fn run_tcp(
                         filter.resize(c, r)
                     }
                     Cmd::Break => filter.brk(),
+                    _ => None,
                 };
                 if let Some(bytes) = out {
                     if writer.write_all(&bytes).await.is_err() || writer.flush().await.is_err() {

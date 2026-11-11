@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use maelstromssh_core::config::{FlowControl, Parity, Protocol, SerialSettings};
+use maelstromssh_core::config::{
+    parse_forward, FlowControl, ForwardKind, ForwardRule, Parity, Protocol, SerialSettings,
+};
 use maelstromssh_core::prompt::TtyPrompter;
 use maelstromssh_core::serial;
 use maelstromssh_core::session_log::SessionLog;
@@ -44,6 +46,15 @@ struct Cli {
     raw: bool,
     #[command(flatten)]
     line: LineArgs,
+    /// Local forward: [bind:]port:host:hostport (repeatable).
+    #[arg(short = 'L', long = "local-forward", value_name = "SPEC", conflicts_with_all = ["serial", "telnet", "raw"])]
+    local: Vec<String>,
+    /// Remote forward: [bind:]port:host:hostport (repeatable).
+    #[arg(short = 'R', long = "remote-forward", value_name = "SPEC", conflicts_with_all = ["serial", "telnet", "raw"])]
+    remote: Vec<String>,
+    /// Dynamic (SOCKS5) forward: [bind:]port (repeatable).
+    #[arg(short = 'D', long = "dynamic-forward", value_name = "SPEC", conflicts_with_all = ["serial", "telnet", "raw"])]
+    dynamic: Vec<String>,
     /// Save everything the session prints to FILE (appended). A folder gets a
     /// dated file; &H, &P, &Y, &M, &D, &T in the name become the host, port,
     /// date and time.
@@ -106,7 +117,23 @@ impl Cli {
                 .unwrap_or(0);
             return Ok(Target::tcp(protocol, host, port));
         }
-        Ok(self.target.clone().resolve_any()?)
+        let mut target = self.target.clone().resolve_any()?;
+        let mut forwards: Vec<ForwardRule> =
+            Vec::with_capacity(self.local.len() + self.remote.len() + self.dynamic.len());
+        for spec in &self.local {
+            forwards.push(parse_forward(spec, ForwardKind::Local)?);
+        }
+        for spec in &self.remote {
+            forwards.push(parse_forward(spec, ForwardKind::Remote)?);
+        }
+        for spec in &self.dynamic {
+            forwards.push(parse_forward(spec, ForwardKind::Dynamic)?);
+        }
+        if !forwards.is_empty() && target.protocol != Protocol::Ssh {
+            bail!("port forwards need an SSH connection");
+        }
+        target.forwards.extend(forwards);
+        Ok(target)
     }
 }
 
@@ -167,9 +194,8 @@ async fn main() -> Result<()> {
                 .await
                 .context("opening shell channel")?;
 
-            let result = app::run(app::Backend::Ssh(channel), term, target.label(), log).await;
-            session.disconnect().await.ok();
-            result
+            let ssh = app::SshBackend::new(session, channel, &target.forwards).await;
+            app::run(app::Backend::Ssh(Box::new(ssh)), term, target.label(), log).await
         }
         Protocol::Serial => {
             let settings = target.serial.unwrap_or_default();
