@@ -362,6 +362,11 @@ Controls: type normally; `Ctrl+]` quits; `F12` sends a break on serial and
 Telnet connections; mouse wheel / `Shift+PgUp`/`PgDn` scrolls back; window
 resize resizes the remote PTY (or Telnet NAWS).
 
+`F11` opens the **snippet picker** on every connection type: `↑/↓` or `j/k`
+move, `Enter` sends the snippet (with Enter if it is marked to run), `Esc`/`F11`
+closes it. Snippets are shared with the desktop window and web UI
+(`~/.config/maelstromssh/snippets.toml`); add and edit them there.
+
 On SSH connections `F12` opens the **SSH tools** panel instead (`Tab` switches
 tabs, `Esc`/`F12` closes it):
 

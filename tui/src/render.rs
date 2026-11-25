@@ -344,6 +344,74 @@ impl Widget for OverlayView<'_> {
     }
 }
 
+/// The `F11` snippet picker: saved commands from `snippets.toml`.
+pub struct SnippetsView<'a> {
+    /// `(name, command, run)` for each snippet.
+    pub items: &'a [(String, String, bool)],
+    pub selected: usize,
+    pub error: Option<&'a str>,
+}
+
+impl Widget for SnippetsView<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let modal = centered_rect(70, 60, area);
+        Clear.render(modal, buf);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Snippets — [Enter] send  [Esc/F11] close ");
+        let inner = block.inner(modal);
+        block.render(modal, buf);
+        if inner.height == 0 {
+            return;
+        }
+        if let Some(err) = self.error {
+            Paragraph::new(format!(" {err}"))
+                .style(Style::default().fg(ratatui::style::Color::Red))
+                .render(inner, buf);
+            return;
+        }
+        if self.items.is_empty() {
+            Paragraph::new(vec![
+                Line::raw(" No snippets saved yet."),
+                Line::raw(" Add them in the desktop window or the web UI"),
+                Line::raw(" (~/.config/maelstromssh/snippets.toml)."),
+            ])
+            .style(Style::default().add_modifier(Modifier::DIM))
+            .render(inner, buf);
+            return;
+        }
+        let vis = inner.height as usize;
+        let sel = self.selected.min(self.items.len() - 1);
+        let start = sel.saturating_sub(vis.saturating_sub(1));
+        let lines: Vec<Line> = self
+            .items
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(vis)
+            .map(|(i, (name, command, run))| {
+                let mark = if *run { "⏎" } else { " " };
+                let line = Line::from(vec![
+                    Span::styled(
+                        format!(" {mark} {name}  "),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        command.clone(),
+                        Style::default().add_modifier(Modifier::DIM),
+                    ),
+                ]);
+                if i == sel {
+                    line.style(Style::default().add_modifier(Modifier::REVERSED))
+                } else {
+                    line
+                }
+            })
+            .collect();
+        Paragraph::new(lines).render(inner, buf);
+    }
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let w = (area.width.saturating_mul(percent_x) / 100)
         .max(24)

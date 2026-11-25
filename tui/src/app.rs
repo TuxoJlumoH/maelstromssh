@@ -13,7 +13,9 @@ use anyhow::Result;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
-use maelstromssh_core::config::{ForwardKind, ForwardRule, forward_spec, parse_forward};
+use maelstromssh_core::config::{
+    ForwardKind, ForwardRule, Snippet, SnippetStore, forward_spec, parse_forward,
+};
 use maelstromssh_core::serial;
 use maelstromssh_core::session_log::SessionLog;
 use maelstromssh_core::sftp::{self, CancelToken, DirEntry, SftpSession, TransferOptions};
@@ -34,7 +36,9 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
 use crate::input::{ScrollAction, encode_key, encode_sgr_mouse, scroll_action};
-use crate::render::{FileRow, ForwardRow, GridView, OverlayTab, OverlayView, StatusBar};
+use crate::render::{
+    FileRow, ForwardRow, GridView, OverlayTab, OverlayView, SnippetsView, StatusBar,
+};
 
 pub struct RunningForward {
     pub kind: ForwardKind,
@@ -364,6 +368,71 @@ enum TransferEvt {
         is_upload: bool,
         outcome: maelstromssh_core::Result<u64>,
     },
+}
+
+/// The `F11` snippet picker.
+#[derive(Default)]
+struct SnippetPicker {
+    open: bool,
+    items: Vec<Snippet>,
+    selected: usize,
+    error: Option<String>,
+}
+
+/// What a key does while the snippet picker is open.
+#[derive(Debug, PartialEq, Eq)]
+enum PickerAction {
+    None,
+    Close,
+    Send(Vec<u8>),
+}
+
+impl SnippetPicker {
+    fn open_from(&mut self, store: Result<SnippetStore, String>) {
+        self.open = true;
+        self.selected = 0;
+        match store.and_then(|s| s.list().map_err(|e| e.to_string())) {
+            Ok(items) => {
+                self.items = items;
+                self.error = None;
+            }
+            Err(e) => {
+                self.items.clear();
+                self.error = Some(e);
+            }
+        }
+    }
+
+    fn handle_key(&mut self, k: &KeyEvent) -> PickerAction {
+        match k.code {
+            KeyCode::Esc | KeyCode::F(11) => {
+                self.open = false;
+                PickerAction::Close
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.selected = self.selected.saturating_sub(1);
+                PickerAction::None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.selected + 1 < self.items.len() {
+                    self.selected += 1;
+                }
+                PickerAction::None
+            }
+            KeyCode::Enter => match self.items.get(self.selected) {
+                Some(s) => {
+                    self.open = false;
+                    let mut out = s.command.clone().into_bytes();
+                    if s.run {
+                        out.push(b'\r');
+                    }
+                    PickerAction::Send(out)
+                }
+                None => PickerAction::None,
+            },
+            _ => PickerAction::None,
+        }
+    }
 }
 
 struct OverlayState {
@@ -1008,6 +1077,7 @@ async fn event_loop(
         _ => None,
     };
     let mut overlay = OverlayState::new(initial_err);
+    let mut picker = SnippetPicker::default();
 
     loop {
         tokio::select! {
@@ -1021,6 +1091,7 @@ async fn event_loop(
                         term,
                         backend,
                         &overlay,
+                        &picker,
                         endpoint,
                         connected,
                         can_break,
@@ -1036,6 +1107,11 @@ async fn event_loop(
                             && k.modifiers.contains(KeyModifiers::CONTROL)
                         {
                             quit = true;
+                        } else if picker.open {
+                            if let PickerAction::Send(bytes) = picker.handle_key(&k) {
+                                backend.send_bytes(&bytes).await;
+                            }
+                            overlay_dirty = true;
                         } else if overlay.open {
                             if let Backend::Ssh(ssh) = backend {
                                 overlay.handle_key(&k, ssh).await;
@@ -1044,6 +1120,11 @@ async fn event_loop(
                                 overlay.open = false;
                                 overlay_dirty = true;
                             }
+                        } else if k.code == KeyCode::F(11) && k.modifiers.is_empty() {
+                            picker.open_from(
+                                SnippetStore::default_location().map_err(|e| e.to_string()),
+                            );
+                            overlay_dirty = true;
                         } else if is_ssh && k.code == KeyCode::F(12) && k.modifiers.is_empty() {
                             overlay.open = true;
                             if overlay.tab == OverlayTab::Files
@@ -1065,7 +1146,7 @@ async fn event_loop(
                             backend.send_bytes(&bytes).await;
                         }
                     }
-                    Some(Ok(Event::Paste(text))) if !overlay.open => {
+                    Some(Ok(Event::Paste(text))) if !overlay.open && !picker.open => {
                         let mut out = Vec::new();
                         if term.bracketed_paste() {
                             out.extend_from_slice(b"\x1b[200~");
@@ -1076,7 +1157,7 @@ async fn event_loop(
                         }
                         backend.send_bytes(&out).await;
                     }
-                    Some(Ok(Event::Mouse(m))) if !overlay.open => {
+                    Some(Ok(Event::Mouse(m))) if !overlay.open && !picker.open => {
                         handle_mouse(term, backend, m).await;
                     }
                     Some(Ok(Event::Resize(w, h))) => {
@@ -1119,9 +1200,10 @@ async fn event_loop(
 
     if !connected {
         overlay.open = false;
+        picker.open = false;
         // Keep the final screen up until the user has seen it.
         draw_frame(
-            terminal, term, backend, &overlay, endpoint, false, can_break, is_ssh, logging,
+            terminal, term, backend, &overlay, &picker, endpoint, false, can_break, is_ssh, logging,
         )?;
         while let Some(ev) = events.next().await {
             if matches!(ev, Ok(Event::Key(k)) if k.kind == KeyEventKind::Press) {
@@ -1186,6 +1268,7 @@ fn draw_frame(
     term: &Terminal,
     backend: &Backend,
     overlay: &OverlayState,
+    picker: &SnippetPicker,
     endpoint: &str,
     connected: bool,
     can_break: bool,
@@ -1216,6 +1299,7 @@ fn draw_frame(
         } else if can_break {
             parts.push("F12 break".to_string());
         }
+        parts.push("F11 snippets".to_string());
         parts.push("Ctrl-] quit".to_string());
         parts.join(" · ")
     };
@@ -1236,6 +1320,12 @@ fn draw_frame(
             .collect(),
         _ => Vec::new(),
     };
+
+    let snippet_items: Vec<(String, String, bool)> = picker
+        .items
+        .iter()
+        .map(|s| (s.name.clone(), s.command.clone(), s.run))
+        .collect();
 
     let prompt_view = overlay.prompt.as_ref().map(PromptMode::label_and_input);
     let status_view = overlay
@@ -1272,7 +1362,7 @@ fn draw_frame(
         f.render_widget(
             GridView {
                 term,
-                show_cursor: connected && !overlay.open && term.cursor_visible(),
+                show_cursor: connected && !overlay.open && !picker.open && term.cursor_visible(),
             },
             chunks[0],
         );
@@ -1300,6 +1390,16 @@ fn draw_frame(
                 chunks[0],
             );
         }
+        if picker.open {
+            f.render_widget(
+                SnippetsView {
+                    items: &snippet_items,
+                    selected: picker.selected,
+                    error: picker.error.as_deref(),
+                },
+                chunks[0],
+            );
+        }
     })?;
     Ok(())
 }
@@ -1313,4 +1413,55 @@ fn dump_screen(term: &Terminal) {
         let _ = writeln!(out, "{text}");
     }
     let _ = out.flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn snippet_picker_moves_sends_and_closes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SnippetStore::new(tmp.path().join("snippets.toml"));
+        for (name, command, run) in [("a", "uptime", true), ("b", "df -h", false)] {
+            let snippet = Snippet {
+                name: name.into(),
+                command: command.into(),
+                run,
+            };
+            store.save(snippet, None).unwrap();
+        }
+
+        let mut picker = SnippetPicker::default();
+        picker.open_from(Ok(SnippetStore::new(tmp.path().join("snippets.toml"))));
+        assert!(picker.open && picker.error.is_none());
+        assert_eq!(picker.items.len(), 2);
+
+        assert_eq!(picker.handle_key(&key(KeyCode::Up)), PickerAction::None);
+        assert_eq!(picker.selected, 0);
+        assert_eq!(
+            picker.handle_key(&key(KeyCode::Enter)),
+            PickerAction::Send(b"uptime\r".to_vec())
+        );
+        assert!(!picker.open);
+
+        picker.open_from(Ok(SnippetStore::new(tmp.path().join("snippets.toml"))));
+        picker.handle_key(&key(KeyCode::Down));
+        picker.handle_key(&key(KeyCode::Down));
+        assert_eq!(picker.selected, 1);
+        assert_eq!(
+            picker.handle_key(&key(KeyCode::Enter)),
+            PickerAction::Send(b"df -h".to_vec())
+        );
+
+        picker.open_from(Err("boom".into()));
+        assert_eq!(picker.error.as_deref(), Some("boom"));
+        assert_eq!(picker.handle_key(&key(KeyCode::Enter)), PickerAction::None);
+        assert_eq!(picker.handle_key(&key(KeyCode::Esc)), PickerAction::Close);
+        assert!(!picker.open);
+    }
 }

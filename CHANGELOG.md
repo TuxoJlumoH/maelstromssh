@@ -8,6 +8,7 @@
   profiles.
 - Desktop window: *Snippets* window to paste or run saved commands in the
   active tab, and to add, edit and delete them.
+- Terminal UI: `F11` snippet picker that sends a saved command.
 
 ## 0.6.0 — 2026-11-25
 
