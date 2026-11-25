@@ -1,12 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-11-25
 
 ### Added
 
-- Desktop window: tabbed sessions (`Ctrl+Shift+T` new tab, `Ctrl+Shift+W` close tab, `Ctrl+PageUp`/`Ctrl+PageDown` navigation, tab status indicators, prompt attention badges, and disconnect confirmation).
-- SFTP transfer queue with progress, cancel, and resume across core (`get_with`/`put_with`, `TransferOptions`, `CancelToken`), desktop window (non-blocking transfer queue with progress bars, speed, and cancel/resume), terminal UI (in-flight progress indicator, `c`/`Esc` cancellation, resume toggle with `Tab`), and CLI (`-c`/`--resume` flag and live TTY progress).
-- Desktop window: *SSH keys* (list, copy, generate) and *Known hosts* (view, remove) windows.
+- Desktop window: several sessions in tabs. `Ctrl+Shift+T` opens a tab,
+  `Ctrl+Shift+W` closes it, `Ctrl+PageUp`/`Ctrl+PageDown` switch. Each tab
+  shows its status, background tabs keep running, a `!` marks a tab waiting
+  for a password or host-key answer, and closing a connected tab asks first.
+- SFTP transfer queue with progress, speed, cancel and resume in the
+  desktop window and terminal UI (`c`/`Esc` cancels, `Tab` toggles resume).
+  The CLI `sftp get`/`put` gain `-c`/`--resume` and a progress line.
+- Desktop window: *SSH keys* (list, copy, generate) and *Known hosts*
+  (view, remove) windows, opened from the connect form.
 
 ## 0.5.0 — 2026-11-25
 

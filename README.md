@@ -46,7 +46,7 @@ All screenshots are of the web UI, taken against a test server with made-up host
 |---|---|
 | `maelstromssh` | Command line — connect, `serial`, `telnet`, `raw`, `sftp`, `profile`, `keygen`, `known-hosts` |
 | `maelstromssh-tui` | Full-screen terminal UI (`ratatui`) |
-| `maelstromssh-gui` | Desktop window (`egui`/`eframe`) |
+| `maelstromssh-gui` | Desktop window (`egui`/`eframe`), several sessions in tabs |
 | `maelstromssh-web` | Browser UI served on 127.0.0.1 (`axum` + `xterm.js`) |
 
 `make install` and the Arch package also add `mssh` as a short alias for `maelstromssh`
