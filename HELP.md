@@ -394,13 +394,16 @@ buttons. While connected to a serial port or Telnet server, the status bar has
 a **Send break** button. When a connection fails, **Change…** returns to the
 form, prefilled.
 
-On SSH connections the status bar has two more buttons:
+On SSH connections the status bar has three buttons:
 
 - **Files (SFTP)** — browse folders, download, upload to the current folder,
   rename, delete and create folders.
 - **Forwards** — add `-L`/`-R`/`-D` forwards (same syntax as the CLI) and stop
   them while connected. `-L/-R/-D` on the command line and a profile's
   forwards start on connect.
+- **Keys** — open the *SSH keys* manager while connected.
+
+The connect form includes **SSH keys…** and **Known hosts…** buttons to open floating management windows. The **SSH keys** window lists public keys found in `~/.ssh`, copies public keys to the clipboard, and generates new Ed25519 or 3072-bit RSA keypairs. The **Known hosts** window lists trusted server fingerprints in `~/.ssh/known_hosts` and lets you remove outdated host entries with two-click confirmation.
 
 In-window controls:
 

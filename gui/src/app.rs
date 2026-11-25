@@ -20,6 +20,7 @@ use maelstromssh_core::term::Terminal;
 use tokio::sync::mpsc;
 
 use crate::keys::{self, KeyOut};
+use crate::manage::{self, KeysWindow, KnownHostsWindow};
 use crate::paint::{self, Palette};
 use crate::ssh::{self, Cmd, Evt, ForwardItem, Question};
 
@@ -491,6 +492,9 @@ pub struct GuiApp {
     forward_kind: ForwardKind,
     forward_spec: String,
     forward_status: Option<(String, bool)>,
+
+    keys_window: KeysWindow,
+    known_hosts_window: KnownHostsWindow,
 }
 
 impl GuiApp {
@@ -549,6 +553,8 @@ impl GuiApp {
             forward_kind: ForwardKind::Local,
             forward_spec: String::new(),
             forward_status: None,
+            keys_window: KeysWindow::default(),
+            known_hosts_window: KnownHostsWindow::default(),
         }
     }
 
@@ -691,6 +697,10 @@ impl eframe::App for GuiApp {
                     }
                 });
         }
+
+        let ctx = ui.ctx().clone();
+        manage::show_keys_window(&ctx, &mut self.keys_window);
+        manage::show_known_hosts_window(&ctx, &mut self.known_hosts_window);
 
         if self.quit {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -980,6 +990,13 @@ impl GuiApp {
         ui.horizontal(|ui| {
             submit |= ui.button("Connect").clicked() || enter;
             quit |= ui.button("Quit").clicked();
+            ui.add_space(12.0);
+            if ui.button("SSH keys…").clicked() {
+                self.keys_window.open();
+            }
+            if ui.button("Known hosts…").clicked() {
+                self.known_hosts_window.open();
+            }
         });
 
         if quit {
@@ -1695,7 +1712,7 @@ impl GuiApp {
 
         let protocol = self.target.as_ref().map(|t| t.protocol);
         let btn_rect = Rect::from_min_max(
-            pos2((rect.max.x - 240.0).max(rect.min.x), rect.min.y),
+            pos2((rect.max.x - 300.0).max(rect.min.x), rect.min.y),
             rect.max,
         );
         ui.scope_builder(
@@ -1723,6 +1740,13 @@ impl GuiApp {
                                 let _ = tx.send(Cmd::SftpList {
                                     path: ".".to_string(),
                                 });
+                            }
+                        }
+                        if ui.small_button("Keys").clicked() {
+                            if self.keys_window.open {
+                                self.keys_window.open = false;
+                            } else {
+                                self.keys_window.open();
                             }
                         }
                     }

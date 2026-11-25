@@ -7,6 +7,7 @@
 
 mod app;
 mod keys;
+pub mod manage;
 mod paint;
 mod ssh;
 

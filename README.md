@@ -27,7 +27,7 @@
 - **Serial / COM ports** — open `/dev/ttyUSB0`, `/dev/ttyACM0`, `/dev/ttyS0` etc. with any baud rate, data bits, parity, stop bits and flow control, and send a break; in every front-end.
 - **Telnet and raw TCP** — for old switches, routers and serial-over-IP adapters: Telnet option negotiation (window size, terminal type, break), or bytes passed through unchanged.
 - **Session logging** — save everything a session prints to a file (`--log`, or *Save output* in the desktop window and web UI).
-- **Keys and known hosts** — generate Ed25519 and RSA keys, list your `~/.ssh` keys, and inspect or remove trusted server fingerprints (CLI and web UI).
+- **Keys and known hosts** — generate Ed25519 and RSA keys, list your `~/.ssh` keys, and inspect or remove trusted server fingerprints (CLI, desktop window and web UI).
 - **Snippets** — saved commands you can paste or run with one click in the web UI.
 - **Full terminal emulator** — 256-color + truecolor, scrollback, reflow-on-resize, scroll regions, alternate screen, mouse reporting, bracketed paste.
 - **Profiles** — saved connection settings, including port forwards.
@@ -165,7 +165,6 @@ packaging/              — desktop entry, Arch PKGBUILD
 
 ## Roadmap
 
-- Known-hosts manager and SSH key list in the desktop window.
 - Several sessions in one desktop window (tabs).
 - SFTP transfer queue with progress and resume.
 

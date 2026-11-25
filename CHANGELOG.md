@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Desktop window: *SSH keys* (list, copy, generate) and *Known hosts* (view, remove) windows.
+
 ## 0.5.0 — 2026-11-25
 
 ### Added

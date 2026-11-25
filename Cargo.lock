@@ -3154,6 +3154,7 @@ dependencies = [
  "eframe",
  "egui",
  "maelstromssh-core",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
