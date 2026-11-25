@@ -6,6 +6,8 @@
 
 - Desktop window: save the connect form as a profile and delete saved
   profiles.
+- Desktop window: *Snippets* window to paste or run saved commands in the
+  active tab, and to add, edit and delete them.
 
 ## 0.6.0 — 2026-11-25
 

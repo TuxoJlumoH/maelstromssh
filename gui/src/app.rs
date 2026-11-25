@@ -22,7 +22,7 @@ use maelstromssh_core::term::Terminal;
 use tokio::sync::mpsc;
 
 use crate::keys::{self, KeyOut};
-use crate::manage::{self, KeysWindow, KnownHostsWindow};
+use crate::manage::{self, ToolWindows};
 use crate::paint::{self, Palette};
 use crate::ssh::{self, Cmd, Evt, ForwardItem, Question, TransferKind, TransferState};
 
@@ -1015,8 +1015,7 @@ impl Session {
         &mut self,
         ui: &mut egui::Ui,
         tab_count: usize,
-        keys_window: &mut KeysWindow,
-        known_hosts_window: &mut KnownHostsWindow,
+        windows: &mut ToolWindows,
         term_type: &str,
         handle: &tokio::runtime::Handle,
     ) -> SessionAction {
@@ -1355,10 +1354,13 @@ impl Session {
             close_tab |= ui.button(close_label).clicked();
             ui.add_space(12.0);
             if ui.button("SSH keys…").clicked() {
-                keys_window.open();
+                windows.keys.open();
             }
             if ui.button("Known hosts…").clicked() {
-                known_hosts_window.open();
+                windows.known_hosts.open();
+            }
+            if ui.button("Snippets…").clicked() {
+                windows.snippets.open();
             }
         });
 
@@ -1527,7 +1529,7 @@ impl Session {
         &mut self,
         ui: &mut egui::Ui,
         metrics: &mut RenderMetrics,
-        keys_window: &mut KeysWindow,
+        windows: &mut ToolWindows,
         modal_open: bool,
     ) {
         let full = ui.available_rect_before_wrap();
@@ -1568,7 +1570,7 @@ impl Session {
         if !modal_open {
             self.handle_input(ui, metrics);
         }
-        self.paint(ui, status_rect, metrics, keys_window);
+        self.paint(ui, status_rect, metrics, windows);
     }
 
     fn ui_sftp_window(&mut self, ctx: &egui::Context) {
@@ -2224,7 +2226,7 @@ impl Session {
         ui: &mut egui::Ui,
         status_rect: Rect,
         metrics: &RenderMetrics,
-        keys_window: &mut KeysWindow,
+        windows: &mut ToolWindows,
     ) {
         let painter = ui.painter();
         painter.rect_filled(metrics.grid_rect, 0.0, metrics.palette.bg);
@@ -2297,10 +2299,10 @@ impl Session {
             }
         }
 
-        self.paint_status(ui, status_rect, keys_window);
+        self.paint_status(ui, status_rect, windows);
     }
 
-    fn paint_status(&mut self, ui: &mut egui::Ui, rect: Rect, keys_window: &mut KeysWindow) {
+    fn paint_status(&mut self, ui: &mut egui::Ui, rect: Rect, windows: &mut ToolWindows) {
         let painter = ui.painter();
         painter.rect_filled(rect, 0.0, Color32::from_rgb(30, 30, 36));
 
@@ -2329,7 +2331,7 @@ impl Session {
 
         let protocol = self.target.as_ref().map(|t| t.protocol);
         let btn_rect = Rect::from_min_max(
-            pos2((rect.max.x - 300.0).max(rect.min.x), rect.min.y),
+            pos2((rect.max.x - 380.0).max(rect.min.x), rect.min.y),
             rect.max,
         );
         ui.scope_builder(
@@ -2338,6 +2340,13 @@ impl Session {
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
             |ui| {
                 ui.add_space(6.0);
+                if ui.small_button("Snippets").clicked() {
+                    if windows.snippets.open {
+                        windows.snippets.open = false;
+                    } else {
+                        windows.snippets.open();
+                    }
+                }
                 match protocol {
                     Some(Protocol::Ssh) => {
                         let fwd_label = if self.forwards.is_empty() {
@@ -2372,10 +2381,10 @@ impl Session {
                             }
                         }
                         if ui.small_button("Keys").clicked() {
-                            if keys_window.open {
-                                keys_window.open = false;
+                            if windows.keys.open {
+                                windows.keys.open = false;
                             } else {
-                                keys_window.open();
+                                windows.keys.open();
                             }
                         }
                     }
@@ -2445,8 +2454,7 @@ pub struct GuiApp {
     row_h: f32,
 
     quit: bool,
-    keys_window: KeysWindow,
-    known_hosts_window: KnownHostsWindow,
+    windows: ToolWindows,
 }
 
 impl GuiApp {
@@ -2469,8 +2477,7 @@ impl GuiApp {
             char_w: 8.0,
             row_h: 14.0,
             quit: false,
-            keys_window: KeysWindow::default(),
-            known_hosts_window: KnownHostsWindow::default(),
+            windows: ToolWindows::default(),
         }
     }
 
@@ -2713,7 +2720,7 @@ impl eframe::App for GuiApp {
                 if let Some(session) = self.sessions.get_mut(self.active) {
                     match session.state {
                         State::Running => {
-                            session.ui_running(ui, &mut metrics, &mut self.keys_window, modal_open);
+                            session.ui_running(ui, &mut metrics, &mut self.windows, modal_open);
                         }
                         State::Setup(_) => {
                             egui::Frame::NONE
@@ -2722,8 +2729,7 @@ impl eframe::App for GuiApp {
                                     session_action = session.ui_setup(
                                         ui,
                                         tab_count,
-                                        &mut self.keys_window,
-                                        &mut self.known_hosts_window,
+                                        &mut self.windows,
                                         &self.term_type,
                                         &self.handle,
                                     );
@@ -2754,8 +2760,18 @@ impl eframe::App for GuiApp {
         }
 
         let ctx = ui.ctx().clone();
-        manage::show_keys_window(&ctx, &mut self.keys_window);
-        manage::show_known_hosts_window(&ctx, &mut self.known_hosts_window);
+        manage::show_keys_window(&ctx, &mut self.windows.keys);
+        manage::show_known_hosts_window(&ctx, &mut self.windows.known_hosts);
+        let active_running = self
+            .sessions
+            .get(self.active)
+            .is_some_and(Session::is_connected);
+        if let Some(bytes) =
+            manage::show_snippets_window(&ctx, &mut self.windows.snippets, active_running)
+            && let Some(session) = self.sessions.get(self.active)
+        {
+            session.send_data(bytes);
+        }
 
         if let Some(confirm_id) = self.confirm_close {
             let session = self.sessions.iter().find(|s| s.id == confirm_id);
@@ -3096,8 +3112,7 @@ mod tests {
             char_w: 8.0,
             row_h: 14.0,
             quit: false,
-            keys_window: KeysWindow::default(),
-            known_hosts_window: KnownHostsWindow::default(),
+            windows: ToolWindows::default(),
         };
 
         app.sessions[1].attention = true;

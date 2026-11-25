@@ -28,7 +28,7 @@
 - **Telnet and raw TCP** — for old switches, routers and serial-over-IP adapters: Telnet option negotiation (window size, terminal type, break), or bytes passed through unchanged.
 - **Session logging** — save everything a session prints to a file (`--log`, or *Save output* in the desktop window and web UI).
 - **Keys and known hosts** — generate Ed25519 and RSA keys, list your `~/.ssh` keys, and inspect or remove trusted server fingerprints (CLI, desktop window and web UI).
-- **Snippets** — saved commands you can paste or run with one click in the web UI.
+- **Snippets** — saved commands you can paste or run with one click in the desktop window and the web UI.
 - **Full terminal emulator** — 256-color + truecolor, scrollback, reflow-on-resize, scroll regions, alternate screen, mouse reporting, bracketed paste.
 - **Profiles** — saved connection settings, including port forwards; create and delete them from the CLI, the desktop window or the web UI.
 
