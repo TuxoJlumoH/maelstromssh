@@ -12,7 +12,7 @@ maelstromssh-core = { path = "../core", features = ["clap", "tty"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "signal"] }
 anyhow = "1"
-crossterm = "0.28"
+crossterm = "0.29"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
