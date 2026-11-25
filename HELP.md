@@ -415,6 +415,8 @@ On SSH connections the status bar has three buttons:
 
 The connect form includes **SSH keys…** and **Known hosts…** buttons to open floating management windows. The **SSH keys** window lists public keys found in `~/.ssh`, copies public keys to the clipboard, and generates new Ed25519 or 3072-bit RSA keypairs. The **Known hosts** window lists trusted server fingerprints in `~/.ssh/known_hosts` and lets you remove outdated host entries with two-click confirmation.
 
+Multiple sessions run in tabs within the single window. The top tab bar shows a tab for each session with a colored status dot (green for connected, yellow for connecting or waiting for input, red for failed, gray for setup), an attention badge (`!`) when an authentication prompt is waiting in an inactive tab, the session title, and a `×` close button. The `+` button opens a new connection tab. Closing a running connection prompts for confirmation before disconnecting; closing the last remaining tab quits the application.
+
 In-window controls:
 
 | Action | How |
@@ -422,6 +424,9 @@ In-window controls:
 | Type / run commands | normal typing |
 | Interrupt / EOF | `Ctrl+C` · `Ctrl+D` |
 | Paste | `Ctrl+V` or `Ctrl+Shift+V` |
+| New tab | `Ctrl+Shift+T` (or `+` on the tab bar) |
+| Close tab | `Ctrl+Shift+W` (or `×` on the tab pill) |
+| Next / previous tab | `Ctrl+PageDown` / `Ctrl+PageUp` |
 | Scroll back | mouse wheel, or `Shift`+`↑/↓`/`PgUp`/`PgDn` |
 | Quit | `Ctrl+Shift+Q` (or close the window) |
 | Resize remote terminal | resize the window |

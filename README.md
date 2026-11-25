@@ -163,10 +163,6 @@ assets/                 — app icon (SVG/PNG)
 packaging/              — desktop entry, Arch PKGBUILD
 ```
 
-## Roadmap
-
-- Several sessions in one desktop window (tabs).
-
 ## Documentation
 
 Full usage and API reference: [`HELP.md`](HELP.md). Release notes:

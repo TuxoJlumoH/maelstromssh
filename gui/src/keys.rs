@@ -16,6 +16,14 @@ pub enum KeyOut {
     Quit,
     /// A local paste shortcut (Ctrl+Shift+V).
     Paste,
+    /// Open a new tab (Ctrl+Shift+T).
+    NewTab,
+    /// Close the active tab (Ctrl+Shift+W).
+    CloseTab,
+    /// Switch to the previous tab (Ctrl+PageUp).
+    PrevTab,
+    /// Switch to the next tab (Ctrl+PageDown).
+    NextTab,
 }
 
 /// Maps a key event to its output. Printable keys with no Ctrl/Alt are
@@ -25,11 +33,23 @@ pub fn encode(key: Key, mods: Modifiers, app_cursor: bool) -> KeyOut {
     let alt = mods.alt;
     let shift = mods.shift;
 
-    if ctrl && shift && key == Key::Q {
+    if ctrl && shift && !alt && key == Key::Q {
         return KeyOut::Quit;
     }
-    if ctrl && shift && key == Key::V {
+    if ctrl && shift && !alt && key == Key::V {
         return KeyOut::Paste;
+    }
+    if ctrl && shift && !alt && key == Key::T {
+        return KeyOut::NewTab;
+    }
+    if ctrl && shift && !alt && key == Key::W {
+        return KeyOut::CloseTab;
+    }
+    if ctrl && !shift && !alt && key == Key::PageUp {
+        return KeyOut::PrevTab;
+    }
+    if ctrl && !shift && !alt && key == Key::PageDown {
+        return KeyOut::NextTab;
     }
 
     // Ctrl+letter/symbol -> control byte.
@@ -259,6 +279,26 @@ impl KeyOut {
     fn is_paste(&self) -> bool {
         matches!(self, KeyOut::Paste)
     }
+
+    #[cfg(test)]
+    fn is_new_tab(&self) -> bool {
+        matches!(self, KeyOut::NewTab)
+    }
+
+    #[cfg(test)]
+    fn is_close_tab(&self) -> bool {
+        matches!(self, KeyOut::CloseTab)
+    }
+
+    #[cfg(test)]
+    fn is_prev_tab(&self) -> bool {
+        matches!(self, KeyOut::PrevTab)
+    }
+
+    #[cfg(test)]
+    fn is_next_tab(&self) -> bool {
+        matches!(self, KeyOut::NextTab)
+    }
 }
 
 #[cfg(test)]
@@ -345,5 +385,38 @@ mod tests {
     #[test]
     fn quit_shortcut() {
         assert!(encode(Key::Q, m(true, false, true), false).is_quit());
+    }
+
+    #[test]
+    fn tab_shortcuts() {
+        assert!(encode(Key::T, m(true, false, true), false).is_new_tab());
+        assert!(encode(Key::W, m(true, false, true), false).is_close_tab());
+        assert!(encode(Key::PageUp, m(true, false, false), false).is_prev_tab());
+        assert!(encode(Key::PageDown, m(true, false, false), false).is_next_tab());
+    }
+
+    #[test]
+    fn tab_shortcuts_preserve_shell_keys() {
+        assert_eq!(
+            encode(Key::T, m(true, false, false), false).bytes(),
+            &[0x14]
+        );
+        assert_eq!(
+            encode(Key::W, m(true, false, false), false).bytes(),
+            &[0x17]
+        );
+        assert_eq!(
+            encode(Key::PageUp, m(false, false, false), false).bytes(),
+            b"\x1b[5~"
+        );
+        assert_eq!(
+            encode(Key::PageDown, m(false, false, false), false).bytes(),
+            b"\x1b[6~"
+        );
+        assert_eq!(
+            encode(Key::PageUp, m(false, false, true), false).bytes(),
+            b"\x1b[5;2~"
+        );
+        assert!(!encode(Key::T, m(true, true, true), false).is_new_tab());
     }
 }

@@ -446,35 +446,40 @@ fn auth_label(choice: Option<AuthChoice>, profile: bool) -> &'static str {
     }
 }
 
-pub struct GuiApp {
-    /// `None` until the connect form has been filled in.
+#[derive(Clone, Copy)]
+struct RenderMetrics {
+    font_size: f32,
+    palette: Palette,
+    grid_rect: Rect,
+    char_w: f32,
+    row_h: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SessionAction {
+    None,
+    CloseTab,
+}
+
+struct Session {
+    id: u64,
     target: Option<Target>,
-    /// The profile the target came from, to prefill the form again.
     profile: Option<String>,
-    /// `None`: logging off; `Some(None)`: default log dir; `Some(Some(p))`: explicit path.
     log_spec: Option<Option<PathBuf>>,
     log: Option<SessionLog>,
-    term_type: String,
-    handle: tokio::runtime::Handle,
     cmd_tx: Option<mpsc::UnboundedSender<Cmd>>,
     evt_rx: Option<mpsc::UnboundedReceiver<Evt>>,
 
     state: State,
+    attention: bool,
 
     term: Terminal,
     cols: u32,
     rows: u32,
-    font_size: f32,
-    palette: Palette,
-
-    grid_rect: Rect,
-    char_w: f32,
-    row_h: f32,
 
     pending_scroll: f32,
     pointer_cell: Option<(u16, u16)>,
     drag_button: Option<u8>,
-    quit: bool,
 
     // In-session SSH tool windows (SFTP & Port Forwards)
     show_sftp: bool,
@@ -495,9 +500,6 @@ pub struct GuiApp {
     forward_kind: ForwardKind,
     forward_spec: String,
     forward_status: Option<(String, bool)>,
-
-    keys_window: KeysWindow,
-    known_hosts_window: KnownHostsWindow,
 }
 
 struct TransferEntry {
@@ -546,13 +548,10 @@ pub fn format_speed(bps: f64) -> String {
     }
 }
 
-impl GuiApp {
-    /// Connects straight away when `launch` names a target or profile;
-    /// otherwise (or if they don't resolve) starts on the connect form,
-    /// prefilled from `launch`.
-    pub fn new(launch: LaunchArgs, term_type: String, handle: tokio::runtime::Handle) -> Self {
+impl Session {
+    fn from_launch(id: u64, launch: &LaunchArgs) -> Self {
         let profile = launch.target.profile.clone();
-        let form = ConnectForm::from_launch(&launch);
+        let form = ConnectForm::from_launch(launch);
         let log_spec = form.log_spec();
         let (target, state) = if launch.target.target.is_some() || profile.is_some() {
             match form.resolve() {
@@ -567,27 +566,21 @@ impl GuiApp {
             (None, State::Setup(Box::new(form)))
         };
         Self {
+            id,
             target,
             profile,
             log_spec,
             log: None,
-            term_type,
-            handle,
             cmd_tx: None,
             evt_rx: None,
             state,
+            attention: false,
             term: Terminal::new(80, 24),
             cols: 80,
             rows: 24,
-            font_size: 14.0,
-            palette: Palette::default(),
-            grid_rect: Rect::NOTHING,
-            char_w: 8.0,
-            row_h: 14.0,
             pending_scroll: 0.0,
             pointer_cell: None,
             drag_button: None,
-            quit: false,
             show_sftp: false,
             sftp_path: String::new(),
             sftp_path_input: String::new(),
@@ -605,13 +598,53 @@ impl GuiApp {
             forward_kind: ForwardKind::Local,
             forward_spec: String::new(),
             forward_status: None,
-            keys_window: KeysWindow::default(),
-            known_hosts_window: KnownHostsWindow::default(),
         }
     }
 
-    /// Spawns a fresh connect task with its own channels.
-    fn start_connect(&mut self, ctx: &egui::Context) {
+    fn new_setup(id: u64) -> Self {
+        let form = ConnectForm::new();
+        Self {
+            id,
+            target: None,
+            profile: None,
+            log_spec: None,
+            log: None,
+            cmd_tx: None,
+            evt_rx: None,
+            state: State::Setup(Box::new(form)),
+            attention: false,
+            term: Terminal::new(80, 24),
+            cols: 80,
+            rows: 24,
+            pending_scroll: 0.0,
+            pointer_cell: None,
+            drag_button: None,
+            show_sftp: false,
+            sftp_path: String::new(),
+            sftp_path_input: String::new(),
+            sftp_entries: Vec::new(),
+            sftp_selected: None,
+            sftp_status: None,
+            sftp_local_path: String::new(),
+            sftp_mkdir_name: String::new(),
+            sftp_rename_to: String::new(),
+            sftp_resume: false,
+            sftp_transfers: Vec::new(),
+            sftp_next_transfer_id: 1,
+            show_forwards: false,
+            forwards: Vec::new(),
+            forward_kind: ForwardKind::Local,
+            forward_spec: String::new(),
+            forward_status: None,
+        }
+    }
+
+    fn start_connect(
+        &mut self,
+        term_type: &str,
+        handle: &tokio::runtime::Handle,
+        ctx: &egui::Context,
+    ) {
         let Some(target) = self.target.clone() else {
             return;
         };
@@ -651,9 +684,9 @@ impl GuiApp {
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (evt_tx, evt_rx) = mpsc::unbounded_channel();
-        self.handle.spawn(ssh::connect_and_run(
+        handle.spawn(ssh::connect_and_run(
             target,
-            self.term_type.clone(),
+            term_type.to_string(),
             cmd_rx,
             evt_tx,
             ctx.clone(),
@@ -664,73 +697,19 @@ impl GuiApp {
         self.state = State::Connecting;
     }
 
-    fn queue_transfer(&mut self, kind: TransferKind, remote: String, local: PathBuf, resume: bool) {
-        let id = self.sftp_next_transfer_id;
-        self.sftp_next_transfer_id += 1;
-        let display_name = match kind {
-            TransferKind::Download => remote.rsplit('/').next().unwrap_or(&remote).to_string(),
-            TransferKind::Upload => local
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("file")
-                .to_string(),
-        };
-        self.sftp_transfers.push(TransferEntry {
-            id,
-            kind,
-            remote: remote.clone(),
-            local: local.clone(),
-            display_name,
-            done: 0,
-            total: None,
-            state: TransferState::Queued,
-            speed_bps: 0.0,
-            speed_sample_at: None,
-            speed_sample_bytes: 0,
-        });
-        if let Some(tx) = &self.cmd_tx {
-            let cmd = match kind {
-                TransferKind::Download => Cmd::SftpDownload {
-                    id,
-                    remote,
-                    local,
-                    resume,
-                },
-                TransferKind::Upload => Cmd::SftpUpload {
-                    id,
-                    local,
-                    remote,
-                    resume,
-                },
-            };
-            let _ = tx.send(cmd);
-        }
-    }
-
-    fn join_remote(&self, name: &str) -> String {
-        if name.starts_with('/') || self.sftp_path.is_empty() || self.sftp_path == "." {
-            name.to_string()
-        } else if self.sftp_path.ends_with('/') {
-            format!("{}{name}", self.sftp_path)
-        } else {
-            format!("{}/{name}", self.sftp_path)
-        }
-    }
-}
-
-impl eframe::App for GuiApp {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.evt_rx.is_none() && !matches!(self.state, State::Setup(_) | State::Failed(_)) {
-            self.start_connect(ctx);
-        }
-
-        // Drain session events, feeding output into the emulator and sending any
-        // terminal responses (cursor reports etc.) back.
+    fn drain_events(&mut self, is_active: bool) -> bool {
+        let mut received = false;
         let mut responses: Vec<u8> = Vec::new();
         if let Some(rx) = self.evt_rx.as_mut() {
             while let Ok(evt) = rx.try_recv() {
+                received = true;
                 match evt {
-                    Evt::Ask(q) => self.state = State::from_question(q),
+                    Evt::Ask(q) => {
+                        self.state = State::from_question(q);
+                        if !is_active {
+                            self.attention = true;
+                        }
+                    }
                     Evt::Ready => self.state = State::Running,
                     Evt::Data(data) => {
                         if let Some(log) = self.log.as_mut() {
@@ -841,6 +820,7 @@ impl eframe::App for GuiApp {
                         self.log = None;
                         self.show_sftp = false;
                         self.show_forwards = false;
+                        self.attention = false;
                         self.state = State::Failed(msg);
                     }
                 }
@@ -849,56 +829,125 @@ impl eframe::App for GuiApp {
         if !responses.is_empty() {
             self.send_data(responses);
         }
-
-        // Steady redraw for cursor blink; the session task also pokes repaint.
-        ctx.request_repaint_after(Duration::from_millis(16));
+        received
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if matches!(self.state, State::Running) {
-            self.ui_running(ui);
+    fn title(&self) -> String {
+        self.term
+            .title()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| self.target.as_ref().map(Target::label))
+            .unwrap_or_else(|| "New tab".to_string())
+    }
+
+    fn window_title(&self) -> String {
+        self.term
+            .title()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| self.target.as_ref().map(Target::label))
+            .unwrap_or_else(|| "MaelstromSSH".to_string())
+    }
+
+    fn is_connected(&self) -> bool {
+        matches!(self.state, State::Running)
+    }
+
+    fn status_color(&self) -> Color32 {
+        match self.state {
+            State::Running => OK_GREEN,
+            State::Connecting
+            | State::Secret { .. }
+            | State::HostKey { .. }
+            | State::KeyboardInteractive { .. } => Color32::from_rgb(230, 180, 60),
+            State::Failed(_) => ERROR_RED,
+            State::Setup(_) => Color32::from_gray(140),
+        }
+    }
+
+    fn queue_transfer(&mut self, kind: TransferKind, remote: String, local: PathBuf, resume: bool) {
+        let id = self.sftp_next_transfer_id;
+        self.sftp_next_transfer_id += 1;
+        let display_name = match kind {
+            TransferKind::Download => remote.rsplit('/').next().unwrap_or(&remote).to_string(),
+            TransferKind::Upload => local
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string(),
+        };
+        self.sftp_transfers.push(TransferEntry {
+            id,
+            kind,
+            remote: remote.clone(),
+            local: local.clone(),
+            display_name,
+            done: 0,
+            total: None,
+            state: TransferState::Queued,
+            speed_bps: 0.0,
+            speed_sample_at: None,
+            speed_sample_bytes: 0,
+        });
+        if let Some(tx) = &self.cmd_tx {
+            let cmd = match kind {
+                TransferKind::Download => Cmd::SftpDownload {
+                    id,
+                    remote,
+                    local,
+                    resume,
+                },
+                TransferKind::Upload => Cmd::SftpUpload {
+                    id,
+                    local,
+                    remote,
+                    resume,
+                },
+            };
+            let _ = tx.send(cmd);
+        }
+    }
+
+    fn join_remote(&self, name: &str) -> String {
+        if name.starts_with('/') || self.sftp_path.is_empty() || self.sftp_path == "." {
+            name.to_string()
+        } else if self.sftp_path.ends_with('/') {
+            format!("{}{name}", self.sftp_path)
         } else {
-            egui::Frame::NONE
-                .inner_margin(egui::Margin::same(16))
-                .show(ui, |ui| {
-                    if matches!(self.state, State::Setup(_)) {
-                        self.ui_setup(ui);
-                    } else {
-                        self.ui_dialog(ui);
-                    }
-                });
-        }
-
-        let ctx = ui.ctx().clone();
-        manage::show_keys_window(&ctx, &mut self.keys_window);
-        manage::show_known_hosts_window(&ctx, &mut self.known_hosts_window);
-
-        if self.quit {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            format!("{}/{name}", self.sftp_path)
         }
     }
-}
 
-impl GuiApp {
-    fn ui_setup(&mut self, ui: &mut egui::Ui) {
+    fn ui_setup(
+        &mut self,
+        ui: &mut egui::Ui,
+        tab_count: usize,
+        keys_window: &mut KeysWindow,
+        known_hosts_window: &mut KnownHostsWindow,
+        term_type: &str,
+        handle: &tokio::runtime::Handle,
+    ) -> SessionAction {
         let State::Setup(form) = &mut self.state else {
-            return;
+            return SessionAction::None;
         };
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
         let mut submit = false;
-        let mut quit = false;
+        let mut close_tab = false;
 
         ui.heading("MaelstromSSH");
         ui.label("New connection");
         ui.add_space(8.0);
 
-        egui::Grid::new("connect_form")
+        egui::Grid::new(("connect_form", self.id))
             .num_columns(2)
             .spacing([12.0, 8.0])
             .show(ui, |ui| {
                 if !form.profiles.is_empty() {
                     ui.label("Profile");
-                    egui::ComboBox::from_id_salt("profile")
+                    egui::ComboBox::from_id_salt(("profile", self.id))
                         .selected_text(form.profile.as_deref().unwrap_or("(none)"))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut form.profile, None, "(none)");
@@ -947,7 +996,7 @@ impl GuiApp {
 
                         ui.label("Line");
                         ui.horizontal(|ui| {
-                            egui::ComboBox::from_id_salt("data_bits")
+                            egui::ComboBox::from_id_salt(("data_bits", self.id))
                                 .selected_text(format!("{} data", form.serial_data_bits))
                                 .show_ui(ui, |ui| {
                                     for b in [8u8, 7, 6, 5] {
@@ -958,7 +1007,7 @@ impl GuiApp {
                                         );
                                     }
                                 });
-                            egui::ComboBox::from_id_salt("parity")
+                            egui::ComboBox::from_id_salt(("parity", self.id))
                                 .selected_text(match form.serial_parity {
                                     Parity::None => "no parity",
                                     Parity::Odd => "odd parity",
@@ -981,7 +1030,7 @@ impl GuiApp {
                                         "odd parity",
                                     );
                                 });
-                            egui::ComboBox::from_id_salt("stop_bits")
+                            egui::ComboBox::from_id_salt(("stop_bits", self.id))
                                 .selected_text(format!("{} stop", form.serial_stop_bits))
                                 .show_ui(ui, |ui| {
                                     for s in [1u8, 2] {
@@ -992,7 +1041,7 @@ impl GuiApp {
                                         );
                                     }
                                 });
-                            egui::ComboBox::from_id_salt("flow")
+                            egui::ComboBox::from_id_salt(("flow", self.id))
                                 .selected_text(match form.serial_flow {
                                     FlowControl::None => "no flow ctrl",
                                     FlowControl::Software => "XON/XOFF",
@@ -1090,7 +1139,7 @@ impl GuiApp {
 
                         ui.label("Authentication");
                         let is_profile = form.profile.is_some();
-                        egui::ComboBox::from_id_salt("auth")
+                        egui::ComboBox::from_id_salt(("auth", self.id))
                             .selected_text(auth_label(form.auth, is_profile))
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
@@ -1160,37 +1209,45 @@ impl GuiApp {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             submit |= ui.button("Connect").clicked() || enter;
-            quit |= ui.button("Quit").clicked();
+            let close_label = if tab_count > 1 { "Close tab" } else { "Quit" };
+            close_tab |= ui.button(close_label).clicked();
             ui.add_space(12.0);
             if ui.button("SSH keys…").clicked() {
-                self.keys_window.open();
+                keys_window.open();
             }
             if ui.button("Known hosts…").clicked() {
-                self.known_hosts_window.open();
+                known_hosts_window.open();
             }
         });
 
-        if quit {
-            self.quit = true;
-        } else if submit {
-            match form.resolve() {
-                Ok(target) => {
-                    for warning in &target.warnings {
-                        tracing::warn!("{warning}");
+        if close_tab {
+            SessionAction::CloseTab
+        } else {
+            if submit {
+                match form.resolve() {
+                    Ok(target) => {
+                        for warning in &target.warnings {
+                            tracing::warn!("{warning}");
+                        }
+                        self.profile = form.profile.clone();
+                        self.log_spec = form.log_spec();
+                        self.target = Some(target);
+                        self.start_connect(term_type, handle, ui.ctx());
                     }
-                    self.profile = form.profile.clone();
-                    self.log_spec = form.log_spec();
-                    self.target = Some(target);
-                    self.start_connect(ui.ctx());
+                    Err(e) => form.error = Some(e),
                 }
-                Err(e) => form.error = Some(e),
             }
+            SessionAction::None
         }
     }
 
-    /// Renders whichever pre-session screen the state calls for. The state is
-    /// taken out for the frame and put back unless the dialog was answered.
-    fn ui_dialog(&mut self, ui: &mut egui::Ui) {
+    fn ui_dialog(
+        &mut self,
+        ui: &mut egui::Ui,
+        tab_count: usize,
+        term_type: &str,
+        handle: &tokio::runtime::Handle,
+    ) -> SessionAction {
         let mut state = std::mem::replace(&mut self.state, State::Connecting);
         let label = self.target.as_ref().map(Target::label).unwrap_or_default();
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -1276,7 +1333,8 @@ impl GuiApp {
                     if ui.button("Change…").clicked() {
                         out = Outcome::Edit;
                     }
-                    if ui.button("Quit").clicked() {
+                    let close_label = if tab_count > 1 { "Close tab" } else { "Quit" };
+                    if ui.button(close_label).clicked() {
                         out = Outcome::Quit;
                     }
                 });
@@ -1286,18 +1344,29 @@ impl GuiApp {
         };
 
         match outcome {
-            Outcome::Pending => self.state = state,
-            Outcome::Answered => answer(state, true),
+            Outcome::Pending => {
+                self.state = state;
+                SessionAction::None
+            }
+            Outcome::Answered => {
+                answer(state, true);
+                SessionAction::None
+            }
             Outcome::Quit => {
                 let failed = matches!(state, State::Failed(_));
                 answer(state, false);
                 // Rejecting a prompt cancels the connection; the task then
-                // reports the failure. Quitting from the failure screen exits.
+                // reports the failure. Quitting from the failure screen closes tab/exits.
                 if failed {
-                    self.quit = true;
+                    SessionAction::CloseTab
+                } else {
+                    SessionAction::None
                 }
             }
-            Outcome::Retry => self.start_connect(ui.ctx()),
+            Outcome::Retry => {
+                self.start_connect(term_type, handle, ui.ctx());
+                SessionAction::None
+            }
             Outcome::Edit => {
                 let form = match &self.target {
                     Some(t) => ConnectForm::from_target(t, self.profile.clone(), &self.log_spec),
@@ -1307,11 +1376,18 @@ impl GuiApp {
                 self.cmd_tx = None;
                 self.evt_rx = None;
                 self.state = State::Setup(Box::new(form));
+                SessionAction::None
             }
         }
     }
 
-    fn ui_running(&mut self, ui: &mut egui::Ui) {
+    fn ui_running(
+        &mut self,
+        ui: &mut egui::Ui,
+        metrics: &mut RenderMetrics,
+        keys_window: &mut KeysWindow,
+        modal_open: bool,
+    ) {
         let full = ui.available_rect_before_wrap();
         let status_h = 22.0;
         let grid_rect = Rect::from_min_max(
@@ -1321,7 +1397,7 @@ impl GuiApp {
         let status_rect = Rect::from_min_max(pos2(full.min.x, full.max.y - status_h), full.max);
 
         // Measure the monospace cell and resize the emulator to match.
-        let font = FontId::monospace(self.font_size);
+        let font = FontId::monospace(metrics.font_size);
         let (cw, rh) = ui
             .ctx()
             .fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
@@ -1335,9 +1411,9 @@ impl GuiApp {
                 let _ = tx.send(Cmd::WindowChange { cols, rows });
             }
         }
-        self.grid_rect = grid_rect;
-        self.char_w = cw;
-        self.row_h = rh;
+        metrics.grid_rect = grid_rect;
+        metrics.char_w = cw;
+        metrics.row_h = rh;
 
         let ctx = ui.ctx().clone();
         if self.show_sftp {
@@ -1347,13 +1423,16 @@ impl GuiApp {
             self.ui_forwards_window(&ctx);
         }
 
-        self.handle_input(ui);
-        self.paint(ui, status_rect);
+        if !modal_open {
+            self.handle_input(ui, metrics);
+        }
+        self.paint(ui, status_rect, metrics, keys_window);
     }
 
     fn ui_sftp_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_sftp;
         egui::Window::new("SFTP File Browser")
+            .id(egui::Id::unique(("sftp_window", self.id)))
             .open(&mut open)
             .default_size([560.0, 420.0])
             .resizable(true)
@@ -1397,6 +1476,7 @@ impl GuiApp {
 
                 let mut cd_into: Option<String> = None;
                 egui::ScrollArea::vertical()
+                    .id_salt(("sftp_file_list", self.id))
                     .max_height(210.0)
                     .show(ui, |ui| {
                         if self.sftp_entries.is_empty() {
@@ -1677,7 +1757,7 @@ impl GuiApp {
 
                     let mut to_resume = None;
                     egui::ScrollArea::vertical()
-                        .id_salt("sftp_transfers")
+                        .id_salt(("sftp_transfers", self.id))
                         .max_height(140.0)
                         .show(ui, |ui| {
                             for entry in &mut self.sftp_transfers {
@@ -1764,12 +1844,13 @@ impl GuiApp {
     fn ui_forwards_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_forwards;
         egui::Window::new("Port Forwards")
+            .id(egui::Id::unique(("forwards_window", self.id)))
             .open(&mut open)
             .default_size([480.0, 280.0])
             .resizable(true)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("fwd_kind")
+                    egui::ComboBox::from_id_salt(("fwd_kind", self.id))
                         .selected_text(match self.forward_kind {
                             ForwardKind::Local => "Local (-L)",
                             ForwardKind::Remote => "Remote (-R)",
@@ -1820,6 +1901,7 @@ impl GuiApp {
 
                 let mut to_stop = None;
                 egui::ScrollArea::vertical()
+                    .id_salt(("forwards_list", self.id))
                     .max_height(160.0)
                     .show(ui, |ui| {
                         if self.forwards.is_empty() {
@@ -1855,7 +1937,7 @@ impl GuiApp {
         self.show_forwards = open;
     }
 
-    fn handle_input(&mut self, ui: &mut egui::Ui) {
+    fn handle_input(&mut self, ui: &mut egui::Ui, metrics: &RenderMetrics) {
         let kb_captured = ui.ctx().egui_wants_keyboard_input();
         let ptr_captured = ui.ctx().is_pointer_over_egui();
         let events: Vec<egui::Event> = ui.input(|i| i.events.clone());
@@ -1871,9 +1953,9 @@ impl GuiApp {
                 egui::Event::Paste(text) if !kb_captured => {
                     let mut out = Vec::new();
                     if self.term.bracketed_paste() {
-                        out.extend_from_slice(b"\x1b[200~");
+                        out.extend_from_slice(b"[200~");
                         out.extend_from_slice(text.as_bytes());
-                        out.extend_from_slice(b"\x1b[201~");
+                        out.extend_from_slice(b"[201~");
                     } else {
                         out.extend_from_slice(text.as_bytes());
                     }
@@ -1886,7 +1968,13 @@ impl GuiApp {
                     ..
                 } if !kb_captured => match keys::encode(key, modifiers, app_cursor) {
                     KeyOut::Bytes(b) => self.send_data(b),
-                    KeyOut::Quit => self.quit = true,
+                    KeyOut::Quit
+                    | KeyOut::NewTab
+                    | KeyOut::CloseTab
+                    | KeyOut::PrevTab
+                    | KeyOut::NextTab => {
+                        // Handled globally in GuiApp::handle_global_shortcuts
+                    }
                     KeyOut::Paste => ui
                         .ctx()
                         .send_viewport_cmd(egui::ViewportCommand::RequestPaste),
@@ -1900,8 +1988,8 @@ impl GuiApp {
                     button,
                     pressed,
                     modifiers,
-                } if !ptr_captured => self.handle_pointer(pos, button, pressed, modifiers),
-                egui::Event::PointerMoved(pos) if !ptr_captured => self.handle_motion(pos),
+                } if !ptr_captured => self.handle_pointer(pos, button, pressed, modifiers, metrics),
+                egui::Event::PointerMoved(pos) if !ptr_captured => self.handle_motion(pos, metrics),
                 egui::Event::PointerGone => self.drag_button = None,
                 _ => {}
             }
@@ -1910,9 +1998,9 @@ impl GuiApp {
         if !self.term.mouse_sgr() && !ptr_captured {
             let dy = ui.input(|i| i.smooth_scroll_delta.y);
             self.pending_scroll += dy;
-            let lines = (self.pending_scroll / self.row_h).floor() as i64;
+            let lines = (self.pending_scroll / metrics.row_h).floor() as i64;
             if lines != 0 {
-                self.pending_scroll -= lines as f32 * self.row_h;
+                self.pending_scroll -= lines as f32 * metrics.row_h;
                 if lines > 0 {
                     self.term.scroll_up(lines as usize);
                 } else {
@@ -1947,8 +2035,9 @@ impl GuiApp {
         button: egui::PointerButton,
         pressed: bool,
         modifiers: egui::Modifiers,
+        metrics: &RenderMetrics,
     ) {
-        self.pointer_cell = self.cell_at(pos);
+        self.pointer_cell = self.cell_at(pos, metrics);
         if !self.term.mouse_sgr() {
             return;
         }
@@ -1966,8 +2055,8 @@ impl GuiApp {
         self.drag_button = if pressed { Some(code) } else { None };
     }
 
-    fn handle_motion(&mut self, pos: Pos2) {
-        self.pointer_cell = self.cell_at(pos);
+    fn handle_motion(&mut self, pos: Pos2, metrics: &RenderMetrics) {
+        self.pointer_cell = self.cell_at(pos, metrics);
         if !self.term.mouse_sgr() {
             return;
         }
@@ -1977,21 +2066,27 @@ impl GuiApp {
         }
     }
 
-    fn cell_at(&self, pos: Pos2) -> Option<(u16, u16)> {
-        if !self.grid_rect.contains(pos) {
+    fn cell_at(&self, pos: Pos2, metrics: &RenderMetrics) -> Option<(u16, u16)> {
+        if !metrics.grid_rect.contains(pos) {
             return None;
         }
-        let col = (((pos.x - self.grid_rect.min.x) / self.char_w).floor() as u32).min(self.cols - 1)
-            as u16;
-        let row = (((pos.y - self.grid_rect.min.y) / self.row_h).floor() as u32).min(self.rows - 1)
-            as u16;
+        let col = (((pos.x - metrics.grid_rect.min.x) / metrics.char_w).floor() as u32)
+            .min(self.cols - 1) as u16;
+        let row = (((pos.y - metrics.grid_rect.min.y) / metrics.row_h).floor() as u32)
+            .min(self.rows - 1) as u16;
         Some((col, row))
     }
 
-    fn paint(&mut self, ui: &mut egui::Ui, status_rect: Rect) {
+    fn paint(
+        &mut self,
+        ui: &mut egui::Ui,
+        status_rect: Rect,
+        metrics: &RenderMetrics,
+        keys_window: &mut KeysWindow,
+    ) {
         let painter = ui.painter();
-        painter.rect_filled(self.grid_rect, 0.0, self.palette.bg);
-        let font = FontId::monospace(self.font_size);
+        painter.rect_filled(metrics.grid_rect, 0.0, metrics.palette.bg);
+        let font = FontId::monospace(metrics.font_size);
 
         let live = self.term.viewport_offset() == 0;
         let (c_row, c_col) = self.term.cursor_position();
@@ -1999,13 +2094,13 @@ impl GuiApp {
 
         for row in 0..self.rows {
             let line = self.term.viewport_line(row);
-            let y0 = self.grid_rect.min.y + row as f32 * self.row_h;
-            for run in paint::build_runs(line.cells(), &self.palette) {
-                let x0 = self.grid_rect.min.x + run.start_cell as f32 * self.char_w;
-                let w = run.cell_len as f32 * self.char_w;
-                if run.bg != self.palette.bg {
+            let y0 = metrics.grid_rect.min.y + row as f32 * metrics.row_h;
+            for run in paint::build_runs(line.cells(), &metrics.palette) {
+                let x0 = metrics.grid_rect.min.x + run.start_cell as f32 * metrics.char_w;
+                let w = run.cell_len as f32 * metrics.char_w;
+                if run.bg != metrics.palette.bg {
                     painter.rect_filled(
-                        Rect::from_min_size(pos2(x0, y0), vec2(w, self.row_h)),
+                        Rect::from_min_size(pos2(x0, y0), vec2(w, metrics.row_h)),
                         0.0,
                         run.bg,
                     );
@@ -2030,23 +2125,23 @@ impl GuiApp {
                 if run.underline {
                     painter.line_segment(
                         [
-                            pos2(x0, y0 + self.row_h - 1.0),
-                            pos2(x0 + w, y0 + self.row_h - 1.0),
+                            pos2(x0, y0 + metrics.row_h - 1.0),
+                            pos2(x0 + w, y0 + metrics.row_h - 1.0),
                         ],
                         Stroke::new(1.0, run.fg),
                     );
                 }
                 if run.strikethrough {
-                    let my = y0 + self.row_h * 0.5;
+                    let my = y0 + metrics.row_h * 0.5;
                     painter
                         .line_segment([pos2(x0, my), pos2(x0 + w, my)], Stroke::new(1.0, run.fg));
                 }
             }
 
             if show_cursor && row == c_row {
-                let cx = self.grid_rect.min.x + c_col as f32 * self.char_w;
-                let rect = Rect::from_min_size(pos2(cx, y0), vec2(self.char_w, self.row_h));
-                painter.rect_filled(rect, 0.0, self.palette.fg);
+                let cx = metrics.grid_rect.min.x + c_col as f32 * metrics.char_w;
+                let rect = Rect::from_min_size(pos2(cx, y0), vec2(metrics.char_w, metrics.row_h));
+                painter.rect_filled(rect, 0.0, metrics.palette.fg);
                 let ch = line.cells()[c_col as usize].ch;
                 if ch != ' ' {
                     painter.text(
@@ -2054,16 +2149,16 @@ impl GuiApp {
                         Align2::LEFT_TOP,
                         ch.to_string(),
                         font.clone(),
-                        self.palette.bg,
+                        metrics.palette.bg,
                     );
                 }
             }
         }
 
-        self.paint_status(ui, status_rect);
+        self.paint_status(ui, status_rect, keys_window);
     }
 
-    fn paint_status(&mut self, ui: &mut egui::Ui, rect: Rect) {
+    fn paint_status(&mut self, ui: &mut egui::Ui, rect: Rect, keys_window: &mut KeysWindow) {
         let painter = ui.painter();
         painter.rect_filled(rect, 0.0, Color32::from_rgb(30, 30, 36));
 
@@ -2135,10 +2230,10 @@ impl GuiApp {
                             }
                         }
                         if ui.small_button("Keys").clicked() {
-                            if self.keys_window.open {
-                                self.keys_window.open = false;
+                            if keys_window.open {
+                                keys_window.open = false;
                             } else {
-                                self.keys_window.open();
+                                keys_window.open();
                             }
                         }
                     }
@@ -2152,6 +2247,415 @@ impl GuiApp {
                 }
             },
         );
+    }
+}
+
+fn next_tab_index(active: usize, count: usize) -> usize {
+    if count == 0 { 0 } else { (active + 1) % count }
+}
+
+fn prev_tab_index(active: usize, count: usize) -> usize {
+    if count == 0 {
+        0
+    } else if active == 0 {
+        count - 1
+    } else {
+        active - 1
+    }
+}
+
+fn active_after_close(closing: usize, active: usize, new_count: usize) -> usize {
+    if new_count == 0 {
+        0
+    } else if closing < active {
+        active.saturating_sub(1)
+    } else if active >= new_count {
+        new_count - 1
+    } else {
+        active
+    }
+}
+
+fn truncate_tab_title(title: &str, max_chars: usize) -> String {
+    if title.chars().count() <= max_chars {
+        title.to_string()
+    } else {
+        let mut s: String = title.chars().take(max_chars.saturating_sub(1)).collect();
+        s.push('…');
+        s
+    }
+}
+
+pub struct GuiApp {
+    sessions: Vec<Session>,
+    active: usize,
+    next_session_id: u64,
+    confirm_close: Option<u64>,
+    last_window_title: String,
+
+    term_type: String,
+    handle: tokio::runtime::Handle,
+
+    font_size: f32,
+    palette: Palette,
+    grid_rect: Rect,
+    char_w: f32,
+    row_h: f32,
+
+    quit: bool,
+    keys_window: KeysWindow,
+    known_hosts_window: KnownHostsWindow,
+}
+
+impl GuiApp {
+    /// Connects straight away when `launch` names a target or profile;
+    /// otherwise (or if they don't resolve) starts on the connect form,
+    /// prefilled from `launch`.
+    pub fn new(launch: LaunchArgs, term_type: String, handle: tokio::runtime::Handle) -> Self {
+        let session = Session::from_launch(1, &launch);
+        Self {
+            sessions: vec![session],
+            active: 0,
+            next_session_id: 2,
+            confirm_close: None,
+            last_window_title: String::new(),
+            term_type,
+            handle,
+            font_size: 14.0,
+            palette: Palette::default(),
+            grid_rect: Rect::NOTHING,
+            char_w: 8.0,
+            row_h: 14.0,
+            quit: false,
+            keys_window: KeysWindow::default(),
+            known_hosts_window: KnownHostsWindow::default(),
+        }
+    }
+
+    fn add_tab(&mut self) {
+        let id = self.next_session_id;
+        self.next_session_id += 1;
+        self.sessions.push(Session::new_setup(id));
+        self.active = self.sessions.len() - 1;
+    }
+
+    fn switch_tab(&mut self, idx: usize) {
+        if idx < self.sessions.len() {
+            self.active = idx;
+            self.sessions[idx].attention = false;
+        }
+    }
+
+    fn next_tab(&mut self) {
+        if !self.sessions.is_empty() {
+            let next = next_tab_index(self.active, self.sessions.len());
+            self.switch_tab(next);
+        }
+    }
+
+    fn prev_tab(&mut self) {
+        if !self.sessions.is_empty() {
+            let prev = prev_tab_index(self.active, self.sessions.len());
+            self.switch_tab(prev);
+        }
+    }
+
+    fn request_close_tab(&mut self, idx: usize) {
+        if let Some(session) = self.sessions.get(idx) {
+            if session.is_connected() {
+                self.confirm_close = Some(session.id);
+            } else {
+                self.close_tab_at(idx);
+            }
+        }
+    }
+
+    fn close_tab_by_id(&mut self, id: u64) {
+        if self.confirm_close == Some(id) {
+            self.confirm_close = None;
+        }
+        if let Some(pos) = self.sessions.iter().position(|s| s.id == id) {
+            self.close_tab_at(pos);
+        }
+    }
+
+    fn close_tab_at(&mut self, idx: usize) {
+        if self.sessions.len() <= 1 {
+            self.quit = true;
+            return;
+        }
+        if idx < self.sessions.len() {
+            let removed = self.sessions.remove(idx);
+            if self.confirm_close == Some(removed.id) {
+                self.confirm_close = None;
+            }
+            self.active = active_after_close(idx, self.active, self.sessions.len());
+            if let Some(active_session) = self.sessions.get_mut(self.active) {
+                active_session.attention = false;
+            }
+        }
+    }
+
+    fn handle_global_shortcuts(&mut self, ui: &mut egui::Ui) {
+        let mut actions = Vec::new();
+        ui.input_mut(|i| {
+            i.events.retain(|evt| {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = evt
+                {
+                    match keys::encode(*key, *modifiers, false) {
+                        KeyOut::Quit => {
+                            actions.push(KeyOut::Quit);
+                            false
+                        }
+                        KeyOut::NewTab => {
+                            actions.push(KeyOut::NewTab);
+                            false
+                        }
+                        KeyOut::CloseTab => {
+                            actions.push(KeyOut::CloseTab);
+                            false
+                        }
+                        KeyOut::PrevTab => {
+                            actions.push(KeyOut::PrevTab);
+                            false
+                        }
+                        KeyOut::NextTab => {
+                            actions.push(KeyOut::NextTab);
+                            false
+                        }
+                        _ => true,
+                    }
+                } else {
+                    true
+                }
+            });
+        });
+
+        for act in actions {
+            match act {
+                KeyOut::Quit => self.quit = true,
+                KeyOut::NewTab if self.confirm_close.is_none() => self.add_tab(),
+                KeyOut::CloseTab if self.confirm_close.is_none() => {
+                    self.request_close_tab(self.active);
+                }
+                KeyOut::PrevTab if self.confirm_close.is_none() => self.prev_tab(),
+                KeyOut::NextTab if self.confirm_close.is_none() => self.next_tab(),
+                _ => {}
+            }
+        }
+    }
+}
+
+impl eframe::App for GuiApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let mut any_events = false;
+        for (idx, session) in self.sessions.iter_mut().enumerate() {
+            let is_active = idx == self.active;
+            if session.evt_rx.is_none()
+                && !matches!(session.state, State::Setup(_) | State::Failed(_))
+            {
+                session.start_connect(&self.term_type, &self.handle, ctx);
+            }
+            if session.drain_events(is_active) {
+                any_events = true;
+            }
+        }
+        if any_events {
+            ctx.request_repaint();
+        }
+
+        // Steady redraw for cursor blink; the session task also pokes repaint.
+        ctx.request_repaint_after(Duration::from_millis(16));
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if let Some(active) = self.sessions.get(self.active) {
+            let title = active.window_title();
+            if title != self.last_window_title {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+                self.last_window_title = title;
+            }
+        }
+
+        self.handle_global_shortcuts(ui);
+
+        let mut switch_to = None;
+        let mut close_idx = None;
+        let mut new_tab = false;
+
+        let tab_bar_frame = egui::Frame::new()
+            .fill(Color32::from_rgb(24, 24, 30))
+            .inner_margin(egui::Margin::symmetric(6, 4));
+
+        egui::Panel::top("tab_bar")
+            .frame(tab_bar_frame)
+            .show(ui, |ui| {
+                egui::ScrollArea::horizontal()
+                    .id_salt("tab_bar_scroll")
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for (idx, session) in self.sessions.iter().enumerate() {
+                                let is_active = idx == self.active;
+                                let bg = if is_active {
+                                    Color32::from_rgb(46, 48, 60)
+                                } else {
+                                    Color32::from_rgb(32, 32, 40)
+                                };
+                                let pill = egui::Frame::new()
+                                    .fill(bg)
+                                    .corner_radius(4.0)
+                                    .inner_margin(egui::Margin::symmetric(8, 3));
+
+                                pill.show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing = vec2(5.0, 0.0);
+                                        ui.colored_label(session.status_color(), "●");
+                                        if session.attention {
+                                            ui.colored_label(Color32::from_rgb(250, 200, 50), "!")
+                                                .on_hover_text("Prompt waiting");
+                                        }
+                                        let title = truncate_tab_title(&session.title(), 28);
+                                        let title_btn = egui::Button::new(title).frame(false);
+                                        if ui.add(title_btn).clicked() {
+                                            switch_to = Some(idx);
+                                        }
+                                        let close_btn = egui::Button::new("×").frame(false);
+                                        if ui.add(close_btn).on_hover_text("Close tab").clicked() {
+                                            close_idx = Some(idx);
+                                        }
+                                    });
+                                });
+                            }
+                            if ui
+                                .button("+")
+                                .on_hover_text("New tab (Ctrl+Shift+T)")
+                                .clicked()
+                            {
+                                new_tab = true;
+                            }
+                        });
+                    });
+            });
+
+        if let Some(idx) = switch_to {
+            self.switch_tab(idx);
+        }
+        if let Some(idx) = close_idx {
+            self.request_close_tab(idx);
+        }
+        if new_tab && self.confirm_close.is_none() {
+            self.add_tab();
+        }
+
+        let tab_count = self.sessions.len();
+        let modal_open = self.confirm_close.is_some();
+        let mut session_action = SessionAction::None;
+
+        let mut metrics = RenderMetrics {
+            font_size: self.font_size,
+            palette: self.palette,
+            grid_rect: self.grid_rect,
+            char_w: self.char_w,
+            row_h: self.row_h,
+        };
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ui, |ui| {
+                if let Some(session) = self.sessions.get_mut(self.active) {
+                    match session.state {
+                        State::Running => {
+                            session.ui_running(ui, &mut metrics, &mut self.keys_window, modal_open);
+                        }
+                        State::Setup(_) => {
+                            egui::Frame::NONE
+                                .inner_margin(egui::Margin::same(16))
+                                .show(ui, |ui| {
+                                    session_action = session.ui_setup(
+                                        ui,
+                                        tab_count,
+                                        &mut self.keys_window,
+                                        &mut self.known_hosts_window,
+                                        &self.term_type,
+                                        &self.handle,
+                                    );
+                                });
+                        }
+                        _ => {
+                            egui::Frame::NONE
+                                .inner_margin(egui::Margin::same(16))
+                                .show(ui, |ui| {
+                                    session_action = session.ui_dialog(
+                                        ui,
+                                        tab_count,
+                                        &self.term_type,
+                                        &self.handle,
+                                    );
+                                });
+                        }
+                    }
+                }
+            });
+
+        self.grid_rect = metrics.grid_rect;
+        self.char_w = metrics.char_w;
+        self.row_h = metrics.row_h;
+
+        if session_action == SessionAction::CloseTab {
+            self.close_tab_at(self.active);
+        }
+
+        let ctx = ui.ctx().clone();
+        manage::show_keys_window(&ctx, &mut self.keys_window);
+        manage::show_known_hosts_window(&ctx, &mut self.known_hosts_window);
+
+        if let Some(confirm_id) = self.confirm_close {
+            let session = self.sessions.iter().find(|s| s.id == confirm_id);
+            if let Some(session) = session {
+                let mut close_confirmed = false;
+                let mut close_cancelled = false;
+                let title = session.title();
+                egui::Window::new("Close session?")
+                    .id(egui::Id::unique("confirm_close_dialog"))
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(&ctx, |ui| {
+                        ui.label(format!("Disconnect from {title}?"));
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Disconnect").clicked() {
+                                close_confirmed = true;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                close_cancelled = true;
+                            }
+                        });
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            close_cancelled = true;
+                        }
+                    });
+                if close_confirmed {
+                    self.confirm_close = None;
+                    self.close_tab_by_id(confirm_id);
+                } else if close_cancelled {
+                    self.confirm_close = None;
+                }
+            } else {
+                self.confirm_close = None;
+            }
+        }
+
+        if self.quit {
+            self.sessions.clear();
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 }
 
@@ -2194,6 +2698,7 @@ fn answer(state: State, accept: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maelstromssh_core::config::AuthMethod;
 
     #[test]
     fn forward_list_round_trips_local_remote_dynamic() {
@@ -2226,5 +2731,196 @@ mod tests {
         assert_eq!(format_speed(1536.0), "1.5 KiB/s");
         assert_eq!(format_speed(2.5 * 1024.0 * 1024.0), "2.5 MiB/s");
         assert_eq!(format_speed(1.2 * 1024.0 * 1024.0 * 1024.0), "1.2 GiB/s");
+    }
+
+    fn test_session(id: u64, state: State) -> Session {
+        Session {
+            id,
+            target: None,
+            profile: None,
+            log_spec: None,
+            log: None,
+            cmd_tx: None,
+            evt_rx: None,
+            state,
+            attention: false,
+            term: Terminal::new(80, 24),
+            cols: 80,
+            rows: 24,
+            pending_scroll: 0.0,
+            pointer_cell: None,
+            drag_button: None,
+            show_sftp: false,
+            sftp_path: String::new(),
+            sftp_path_input: String::new(),
+            sftp_entries: Vec::new(),
+            sftp_selected: None,
+            sftp_status: None,
+            sftp_local_path: String::new(),
+            sftp_mkdir_name: String::new(),
+            sftp_rename_to: String::new(),
+            sftp_resume: false,
+            sftp_transfers: Vec::new(),
+            sftp_next_transfer_id: 1,
+            show_forwards: false,
+            forwards: Vec::new(),
+            forward_kind: ForwardKind::Local,
+            forward_spec: String::new(),
+            forward_status: None,
+        }
+    }
+
+    #[test]
+    fn tab_index_navigation_wraps() {
+        assert_eq!(next_tab_index(0, 1), 0);
+        assert_eq!(prev_tab_index(0, 1), 0);
+
+        assert_eq!(next_tab_index(0, 3), 1);
+        assert_eq!(next_tab_index(1, 3), 2);
+        assert_eq!(next_tab_index(2, 3), 0);
+
+        assert_eq!(prev_tab_index(0, 3), 2);
+        assert_eq!(prev_tab_index(1, 3), 0);
+        assert_eq!(prev_tab_index(2, 3), 1);
+
+        assert_eq!(next_tab_index(0, 0), 0);
+        assert_eq!(prev_tab_index(0, 0), 0);
+    }
+
+    #[test]
+    fn active_index_after_close() {
+        assert_eq!(active_after_close(0, 2, 2), 1);
+        assert_eq!(active_after_close(1, 1, 2), 1);
+        assert_eq!(active_after_close(2, 2, 2), 1);
+        assert_eq!(active_after_close(2, 1, 2), 1);
+        assert_eq!(active_after_close(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn tab_title_selection_priority() {
+        let mut session = test_session(1, State::Connecting);
+        assert_eq!(session.title(), "New tab");
+        assert_eq!(session.window_title(), "MaelstromSSH");
+
+        let target = Target {
+            protocol: Protocol::Ssh,
+            host: "server.example.com".to_string(),
+            port: 22,
+            user: "alice".to_string(),
+            auth: AuthMethod::Auto {
+                identities: Vec::new(),
+            },
+            jump: Vec::new(),
+            forwards: Vec::new(),
+            serial: None,
+            warnings: Vec::new(),
+        };
+        session.target = Some(target);
+        assert_eq!(session.title(), "alice@server.example.com:22");
+        assert_eq!(session.window_title(), "alice@server.example.com:22");
+
+        session.term.feed(b"\x1b]0;remote-shell\x07");
+        assert_eq!(session.title(), "remote-shell");
+        assert_eq!(session.window_title(), "remote-shell");
+
+        session.term.feed(b"\x1b]0;   \x07");
+        assert_eq!(session.title(), "alice@server.example.com:22");
+        assert_eq!(session.window_title(), "alice@server.example.com:22");
+    }
+
+    #[test]
+    fn truncate_tab_title_handles_utf8() {
+        assert_eq!(truncate_tab_title("short", 10), "short");
+        assert_eq!(truncate_tab_title("exactlength", 11), "exactlength");
+        assert_eq!(truncate_tab_title("longerthanthelimit", 10), "longertha…");
+        assert_eq!(truncate_tab_title("🦀🦀🦀🦀🦀", 4), "🦀🦀🦀…");
+    }
+
+    #[test]
+    fn session_connected_and_status_state() {
+        let s_run = test_session(1, State::Running);
+        assert!(s_run.is_connected());
+        assert_eq!(s_run.status_color(), OK_GREEN);
+
+        let s_conn = test_session(2, State::Connecting);
+        assert!(!s_conn.is_connected());
+        assert_eq!(s_conn.status_color(), Color32::from_rgb(230, 180, 60));
+
+        let s_fail = test_session(3, State::Failed("refused".into()));
+        assert!(!s_fail.is_connected());
+        assert_eq!(s_fail.status_color(), ERROR_RED);
+
+        let (reply, _) = std::sync::mpsc::channel();
+        let s_secret = test_session(
+            4,
+            State::Secret {
+                prompt: "Password:".into(),
+                input: String::new(),
+                reply,
+            },
+        );
+        assert!(!s_secret.is_connected());
+        assert_eq!(s_secret.status_color(), Color32::from_rgb(230, 180, 60));
+    }
+
+    #[test]
+    fn tab_lifecycle_add_switch_close() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut app = GuiApp {
+            sessions: vec![
+                test_session(1, State::Running),
+                test_session(2, State::Failed("err".into())),
+            ],
+            active: 0,
+            next_session_id: 3,
+            confirm_close: None,
+            last_window_title: String::new(),
+            term_type: "xterm-256color".into(),
+            handle: rt.handle().clone(),
+            font_size: 14.0,
+            palette: Palette::default(),
+            grid_rect: Rect::NOTHING,
+            char_w: 8.0,
+            row_h: 14.0,
+            quit: false,
+            keys_window: KeysWindow::default(),
+            known_hosts_window: KnownHostsWindow::default(),
+        };
+
+        app.sessions[1].attention = true;
+        app.switch_tab(1);
+        assert_eq!(app.active, 1);
+        assert!(!app.sessions[1].attention);
+
+        app.next_tab();
+        assert_eq!(app.active, 0);
+        app.prev_tab();
+        assert_eq!(app.active, 1);
+
+        app.sessions.push(test_session(
+            app.next_session_id,
+            State::Failed("new".into()),
+        ));
+        app.next_session_id += 1;
+        app.active = app.sessions.len() - 1;
+        assert_eq!(app.active, 2);
+        assert_eq!(app.sessions.len(), 3);
+
+        app.request_close_tab(2);
+        assert_eq!(app.sessions.len(), 2);
+        assert!(app.confirm_close.is_none());
+
+        app.request_close_tab(0);
+        assert_eq!(app.confirm_close, Some(1));
+        assert_eq!(app.sessions.len(), 2);
+
+        app.close_tab_by_id(1);
+        assert_eq!(app.confirm_close, None);
+        assert_eq!(app.sessions.len(), 1);
+
+        app.close_tab_at(0);
+        assert!(app.quit);
     }
 }
