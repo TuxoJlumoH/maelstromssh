@@ -396,7 +396,9 @@ Without a `TARGET` or `--profile`, the window opens on a **connect form**. Choos
 **SSH**, **Serial**, **Telnet**, or **Raw TCP** (or pick a saved profile),
 optionally tick **Save output** to log the session, and click **Connect**.
 Detected serial ports and `~/.ssh/config` aliases are offered as one-click
-buttons. While connected to a serial port or Telnet server, the status bar has
+buttons. To keep the filled-in fields, type a name next to **Save as profile**
+and click **Save**. With a profile selected, **Delete profile** removes it
+(click **Confirm delete** to finish). While connected to a serial port or Telnet server, the status bar has
 a **Send break** button. When a connection fails, **Change…** returns to the
 form, prefilled.
 

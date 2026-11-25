@@ -30,7 +30,7 @@
 - **Keys and known hosts** — generate Ed25519 and RSA keys, list your `~/.ssh` keys, and inspect or remove trusted server fingerprints (CLI, desktop window and web UI).
 - **Snippets** — saved commands you can paste or run with one click in the web UI.
 - **Full terminal emulator** — 256-color + truecolor, scrollback, reflow-on-resize, scroll regions, alternate screen, mouse reporting, bracketed paste.
-- **Profiles** — saved connection settings, including port forwards.
+- **Profiles** — saved connection settings, including port forwards; create and delete them from the CLI, the desktop window or the web UI.
 
 ## Screenshots
 

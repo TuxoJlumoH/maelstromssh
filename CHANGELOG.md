@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Desktop window: save the connect form as a profile and delete saved
+  profiles.
+
 ## 0.6.0 — 2026-11-25
 
 ### Added

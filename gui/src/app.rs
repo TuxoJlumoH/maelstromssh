@@ -8,14 +8,16 @@ use std::time::{Duration, Instant};
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, pos2, vec2};
 use maelstromssh_core::config::{
-    FlowControl, ForwardKind, ForwardRule, Parity, ProfileStore, Protocol, SerialSettings,
-    SshConfig, forward_spec, parse_forward,
+    FlowControl, ForwardKind, ForwardRule, Parity, Profile, ProfileStore, Protocol, SerialSettings,
+    SshConfig, check_profile_name, forward_spec, parse_forward,
 };
 use maelstromssh_core::prompt::KiPrompt;
 use maelstromssh_core::serial::{self, PortInfo};
 use maelstromssh_core::session_log::SessionLog;
 use maelstromssh_core::sftp::DirEntry;
-use maelstromssh_core::target::{AuthChoice, Target, TargetArgs};
+use maelstromssh_core::target::{
+    AuthChoice, Target, TargetArgs, auth_from_flags, local_user, split_target,
+};
 use maelstromssh_core::term::Terminal;
 use tokio::sync::mpsc;
 
@@ -132,6 +134,12 @@ struct ConnectForm {
     profiles: Vec<String>,
     aliases: Vec<String>,
     serial_ports: Vec<PortInfo>,
+    /// Name typed into "Save as profile".
+    save_name: String,
+    /// Result of the last save or delete.
+    profile_status: Option<String>,
+    /// "Delete profile" was clicked once and waits for confirmation.
+    confirm_delete: bool,
 }
 
 impl Default for ConnectForm {
@@ -157,6 +165,9 @@ impl Default for ConnectForm {
             profiles: Vec::new(),
             aliases: Vec::new(),
             serial_ports: Vec::new(),
+            save_name: String::new(),
+            profile_status: None,
+            confirm_delete: false,
         }
     }
 }
@@ -330,22 +341,7 @@ impl ConnectForm {
                 if target.is_empty() {
                     return Err("enter a serial device path, e.g. /dev/ttyUSB0".into());
                 }
-                let baud = self
-                    .serial_baud
-                    .trim()
-                    .parse::<u32>()
-                    .ok()
-                    .filter(|&b| b > 0)
-                    .ok_or_else(|| format!("'{}' is not a valid baud rate", self.serial_baud))?;
-                let settings = SerialSettings {
-                    baud,
-                    data_bits: self.serial_data_bits,
-                    parity: self.serial_parity,
-                    stop_bits: self.serial_stop_bits,
-                    flow_control: self.serial_flow,
-                };
-                settings.check().map_err(|e| e.to_string())?;
-                Ok(Target::serial(target, settings))
+                Ok(Target::serial(target, self.serial_settings()?))
             }
             Protocol::Telnet | Protocol::Raw => {
                 if target.is_empty() {
@@ -357,6 +353,100 @@ impl ConnectForm {
                 Ok(Target::tcp(self.protocol, target, resolved_port))
             }
         }
+    }
+
+    fn serial_settings(&self) -> Result<SerialSettings, String> {
+        let baud = self
+            .serial_baud
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|&b| b > 0)
+            .ok_or_else(|| format!("'{}' is not a valid baud rate", self.serial_baud))?;
+        let settings = SerialSettings {
+            baud,
+            data_bits: self.serial_data_bits,
+            parity: self.serial_parity,
+            stop_bits: self.serial_stop_bits,
+            flow_control: self.serial_flow,
+        };
+        settings.check().map_err(|e| e.to_string())?;
+        Ok(settings)
+    }
+
+    /// Builds a profile named `name` from the form's fields (not from a
+    /// selected profile).
+    fn to_profile(&self, name: &str) -> Result<Profile, String> {
+        let name = name.trim();
+        check_profile_name(name).map_err(|e| e.to_string())?;
+        let target = self.target.trim();
+        let port = match self.port.trim() {
+            "" => None,
+            p => Some(
+                p.parse::<u16>()
+                    .ok()
+                    .filter(|&p| p != 0)
+                    .ok_or_else(|| format!("'{p}' is not a valid port"))?,
+            ),
+        };
+        let mut profile = Profile::new(name);
+        profile.protocol = self.protocol;
+        match self.protocol {
+            Protocol::Ssh => {
+                let (user, host) = split_target(target);
+                if host.is_empty() {
+                    return Err("enter user@host or a host".into());
+                }
+                let identity = self.identity.trim();
+                let identity = (!identity.is_empty()).then(|| PathBuf::from(identity));
+                let jump = self.jump.trim();
+                profile.host = host;
+                profile.user = user.unwrap_or_else(local_user);
+                profile.port = port.unwrap_or(22);
+                profile.auth = auth_from_flags(self.auth, identity).map_err(|e| e.to_string())?;
+                profile.proxy_jump = (!jump.is_empty()).then(|| jump.to_string());
+                profile.forwards = parse_forward_list(&self.forwards)?;
+            }
+            Protocol::Serial => {
+                if target.is_empty() {
+                    return Err("enter a serial device path, e.g. /dev/ttyUSB0".into());
+                }
+                profile.host = target.to_string();
+                profile.serial = Some(self.serial_settings()?);
+            }
+            Protocol::Telnet | Protocol::Raw => {
+                if target.is_empty() || target.contains('@') {
+                    return Err("enter a host name or address, without a user".into());
+                }
+                profile.host = target.to_string();
+                profile.port = port
+                    .or_else(|| self.protocol.default_port())
+                    .ok_or_else(|| "enter a port (1-65535)".to_string())?;
+            }
+        }
+        Ok(profile)
+    }
+
+    /// Saves the form as a new profile in `store` and selects nothing, so the
+    /// fields stay editable.
+    fn save_profile(&mut self, store: &ProfileStore) -> Result<String, String> {
+        let profile = self.to_profile(&self.save_name)?;
+        if store.load(&profile.name).is_ok() {
+            return Err(format!("a profile named '{}' already exists", profile.name));
+        }
+        store.save(&profile).map_err(|e| e.to_string())?;
+        self.profiles = store.list().map_err(|e| e.to_string())?;
+        self.save_name.clear();
+        Ok(profile.name)
+    }
+
+    /// Deletes the selected profile from `store`.
+    fn delete_profile(&mut self, store: &ProfileStore) -> Result<String, String> {
+        let name = self.profile.take().ok_or("no profile selected")?;
+        store.delete(&name).map_err(|e| e.to_string())?;
+        self.profiles = store.list().map_err(|e| e.to_string())?;
+        self.confirm_delete = false;
+        Ok(name)
     }
 
     fn log_spec(&self) -> Option<Option<PathBuf>> {
@@ -1199,6 +1289,58 @@ impl Session {
                     }
                 }
             });
+        }
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if form.profile.is_some() {
+                form.save_name.clear();
+                if form.confirm_delete {
+                    if ui.button("Confirm delete").clicked() {
+                        let result = ProfileStore::default_location()
+                            .map_err(|e| e.to_string())
+                            .and_then(|store| form.delete_profile(&store));
+                        match result {
+                            Ok(name) => {
+                                form.profile_status = Some(format!("Deleted profile '{name}'"))
+                            }
+                            Err(e) => form.error = Some(e),
+                        }
+                    }
+                    if ui.button("Keep").clicked() {
+                        form.confirm_delete = false;
+                    }
+                } else if ui.button("Delete profile").clicked() {
+                    form.confirm_delete = true;
+                    form.profile_status = None;
+                }
+            } else {
+                form.confirm_delete = false;
+                ui.label("Save as profile");
+                ui.add(
+                    egui::TextEdit::singleline(&mut form.save_name)
+                        .hint_text("name")
+                        .desired_width(140.0),
+                );
+                if ui.button("Save").clicked() {
+                    let result = ProfileStore::default_location()
+                        .map_err(|e| e.to_string())
+                        .and_then(|store| form.save_profile(&store));
+                    match result {
+                        Ok(name) => {
+                            form.error = None;
+                            form.profile_status = Some(format!("Saved profile '{name}'"));
+                        }
+                        Err(e) => {
+                            form.profile_status = None;
+                            form.error = Some(e);
+                        }
+                    }
+                }
+            }
+        });
+        if let Some(status) = &form.profile_status {
+            ui.colored_label(OK_GREEN, status.as_str());
         }
 
         if let Some(err) = &form.error {
@@ -2699,6 +2841,75 @@ fn answer(state: State, accept: bool) {
 mod tests {
     use super::*;
     use maelstromssh_core::config::AuthMethod;
+
+    fn form_with(protocol: Protocol, target: &str) -> ConnectForm {
+        ConnectForm {
+            protocol,
+            target: target.into(),
+            ..ConnectForm::default()
+        }
+    }
+
+    #[test]
+    fn to_profile_builds_ssh_profile_from_fields() {
+        let mut form = form_with(Protocol::Ssh, "alice@example.com");
+        form.port = "2222".into();
+        form.jump = "bastion".into();
+        form.forwards = "L 8080:localhost:80".into();
+        let p = form.to_profile(" web ").unwrap();
+        assert_eq!(p.name, "web");
+        assert_eq!(p.protocol, Protocol::Ssh);
+        assert_eq!(
+            (p.user.as_str(), p.host.as_str(), p.port),
+            ("alice", "example.com", 2222)
+        );
+        assert_eq!(p.proxy_jump.as_deref(), Some("bastion"));
+        assert_eq!(p.forwards.len(), 1);
+        assert!(matches!(p.auth, AuthMethod::Auto { .. }));
+    }
+
+    #[test]
+    fn to_profile_handles_serial_and_tcp_and_rejects_bad_input() {
+        let serial = form_with(Protocol::Serial, "/dev/ttyUSB0")
+            .to_profile("s")
+            .unwrap();
+        assert_eq!(serial.protocol, Protocol::Serial);
+        assert!(serial.serial.is_some());
+
+        let telnet = form_with(Protocol::Telnet, "switch")
+            .to_profile("t")
+            .unwrap();
+        assert_eq!(telnet.port, Protocol::Telnet.default_port().unwrap());
+
+        assert!(form_with(Protocol::Ssh, "").to_profile("x").is_err());
+        assert!(form_with(Protocol::Ssh, "host").to_profile("../x").is_err());
+        assert!(form_with(Protocol::Raw, "").to_profile("x").is_err());
+    }
+
+    #[test]
+    fn save_and_delete_profile_use_the_given_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::new(tmp.path());
+        let mut form = form_with(Protocol::Ssh, "bob@db");
+        form.save_name = "db".into();
+        assert_eq!(form.save_profile(&store).unwrap(), "db");
+        assert_eq!(form.profiles, vec!["db".to_string()]);
+        assert!(form.save_name.is_empty());
+
+        form.save_name = "db".into();
+        assert!(
+            form.save_profile(&store)
+                .unwrap_err()
+                .contains("already exists")
+        );
+
+        form.profile = Some("db".into());
+        form.confirm_delete = true;
+        assert_eq!(form.delete_profile(&store).unwrap(), "db");
+        assert!(form.profiles.is_empty());
+        assert!(form.profile.is_none());
+        assert!(!form.confirm_delete);
+    }
 
     #[test]
     fn forward_list_round_trips_local_remote_dynamic() {
