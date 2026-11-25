@@ -6,13 +6,14 @@
 //!
 //! [`Terminal`]: maelstromssh_core::term::Terminal
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc as std_mpsc};
 
 use maelstromssh_core::config::{ForwardKind, ForwardRule, Protocol, forward_spec, parse_forward};
 use maelstromssh_core::prompt::{KiPrompt, Prompter};
 use maelstromssh_core::serial;
-use maelstromssh_core::sftp::{self, DirEntry, SftpSession};
+use maelstromssh_core::sftp::{self, CancelToken, DirEntry, SftpSession, TransferOptions};
 use maelstromssh_core::ssh::{ChannelMsg, KnownHosts, Session};
 use maelstromssh_core::target::Target;
 use maelstromssh_core::tcp::TcpLine;
@@ -50,9 +51,36 @@ pub enum Cmd {
     /// Rename a remote file or directory over SFTP.
     SftpRename { from: String, to: String },
     /// Download a remote file to a local path over SFTP.
-    SftpDownload { remote: String, local: PathBuf },
+    SftpDownload {
+        id: u64,
+        remote: String,
+        local: PathBuf,
+        resume: bool,
+    },
     /// Upload a local file to a remote path over SFTP.
-    SftpUpload { local: PathBuf, remote: String },
+    SftpUpload {
+        id: u64,
+        local: PathBuf,
+        remote: String,
+        resume: bool,
+    },
+    /// Cancel a running or queued SFTP transfer.
+    SftpCancel { id: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferKind {
+    Download,
+    Upload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransferState {
+    Queued,
+    Running,
+    Done,
+    Cancelled,
+    Failed(String),
 }
 
 /// An event from the SSH task to the UI thread.
@@ -73,6 +101,18 @@ pub enum Evt {
         path: String,
         entries: Vec<DirEntry>,
         status: Option<(String, bool)>,
+    },
+    /// Transfer progress update.
+    SftpTransferProgress {
+        id: u64,
+        done: u64,
+        total: Option<u64>,
+    },
+    /// Transfer state transition.
+    SftpTransferState {
+        id: u64,
+        state: TransferState,
+        bytes: u64,
     },
     /// Status or error message for an SFTP operation.
     SftpStatus { message: String, is_error: bool },
@@ -217,7 +257,7 @@ struct SshTools {
     forwarder: Forwarder,
     forwards: Vec<RunningForward>,
     next_id: u64,
-    sftp: Option<SftpSession>,
+    sftp: Option<Arc<SftpSession>>,
     sftp_dir: String,
 }
 
@@ -281,21 +321,21 @@ impl SshTools {
         }
     }
 
-    async fn ensure_sftp(&mut self) -> Result<&SftpSession, String> {
+    async fn ensure_sftp(&mut self) -> Result<Arc<SftpSession>, String> {
         if self.sftp.is_none() {
             let s = sftp::open(&self.session).await.map_err(|e| e.to_string())?;
-            self.sftp = Some(s);
+            self.sftp = Some(Arc::new(s));
         }
-        Ok(self.sftp.as_ref().expect("sftp initialized"))
+        Ok(Arc::clone(self.sftp.as_ref().expect("sftp initialized")))
     }
 
     async fn list_dir(&mut self, path: &str) -> Result<(String, Vec<DirEntry>), String> {
         let target = if path.is_empty() { "." } else { path };
         let sftp = self.ensure_sftp().await?;
-        let canon = sftp::canonicalize(sftp, target)
+        let canon = sftp::canonicalize(&sftp, target)
             .await
             .map_err(|e| e.to_string())?;
-        let mut entries = sftp::list(sftp, &canon).await.map_err(|e| e.to_string())?;
+        let mut entries = sftp::list(&sftp, &canon).await.map_err(|e| e.to_string())?;
         entries.retain(|e| e.name != "." && e.name != "..");
         entries.sort_by(|a, b| {
             b.is_dir
@@ -305,6 +345,88 @@ impl SshTools {
         self.sftp_dir = canon.clone();
         Ok((canon, entries))
     }
+}
+
+struct TransferJob {
+    id: u64,
+    kind: TransferKind,
+    sftp: Arc<SftpSession>,
+    remote: String,
+    local: PathBuf,
+    resume: bool,
+    cancel: CancelToken,
+}
+
+fn ensure_worker(
+    transfer_tx: &mut Option<mpsc::UnboundedSender<TransferJob>>,
+    evt_tx: mpsc::UnboundedSender<Evt>,
+    notify: egui::Context,
+) -> mpsc::UnboundedSender<TransferJob> {
+    if let Some(tx) = transfer_tx {
+        return tx.clone();
+    }
+    let (tx, mut rx) = mpsc::unbounded_channel::<TransferJob>();
+    *transfer_tx = Some(tx.clone());
+    tokio::spawn(async move {
+        while let Some(job) = rx.recv().await {
+            if job.cancel.is_cancelled() {
+                let _ = evt_tx.send(Evt::SftpTransferState {
+                    id: job.id,
+                    state: TransferState::Cancelled,
+                    bytes: 0,
+                });
+                notify.request_repaint();
+                continue;
+            }
+
+            let _ = evt_tx.send(Evt::SftpTransferState {
+                id: job.id,
+                state: TransferState::Running,
+                bytes: 0,
+            });
+            notify.request_repaint();
+
+            let opts = TransferOptions {
+                resume: job.resume,
+                cancel: Some(job.cancel.clone()),
+            };
+
+            let evt_tx_progress = evt_tx.clone();
+            let notify_progress = notify.clone();
+            let job_id = job.id;
+            let on_progress = move |done: u64, total: Option<u64>| {
+                let _ = evt_tx_progress.send(Evt::SftpTransferProgress {
+                    id: job_id,
+                    done,
+                    total,
+                });
+                notify_progress.request_repaint();
+            };
+
+            let res = match job.kind {
+                TransferKind::Download => {
+                    sftp::get_with(&job.sftp, &job.remote, &job.local, &opts, on_progress).await
+                }
+                TransferKind::Upload => {
+                    sftp::put_with(&job.sftp, &job.local, &job.remote, &opts, on_progress).await
+                }
+            };
+
+            let (state, bytes) = match res {
+                Ok(bytes) => (TransferState::Done, bytes),
+                Err(maelstromssh_core::Error::Cancelled) => (TransferState::Cancelled, 0),
+                Err(e) => (TransferState::Failed(e.to_string()), 0),
+            };
+
+            let _ = evt_tx.send(Evt::SftpTransferState {
+                id: job.id,
+                state,
+                bytes,
+            });
+            notify.request_repaint();
+        }
+    });
+    tx
 }
 
 /// Drives an already-connected session's shell channel.
@@ -327,6 +449,8 @@ async fn run_connected(
         }
     };
     let mut tools = SshTools::new(session);
+    let mut transfer_tx: Option<mpsc::UnboundedSender<TransferJob>> = None;
+    let mut transfer_cancels: HashMap<u64, CancelToken> = HashMap::new();
     let mut init_status = None;
     for rule in &initial_forwards {
         if let Err(e) = tools.start_rule(rule).await {
@@ -411,7 +535,7 @@ async fn run_connected(
                     Some(Cmd::SftpMkdir { path }) => {
                         let res = async {
                             let sftp = tools.ensure_sftp().await?;
-                            sftp::create_dir(sftp, &path)
+                            sftp::create_dir(&sftp, &path)
                                 .await
                                 .map_err(|e| e.to_string())
                         }.await;
@@ -439,9 +563,9 @@ async fn run_connected(
                         let res = async {
                             let sftp = tools.ensure_sftp().await?;
                             if is_dir {
-                                sftp::remove_dir(sftp, &path).await.map_err(|e| e.to_string())
+                                sftp::remove_dir(&sftp, &path).await.map_err(|e| e.to_string())
                             } else {
-                                sftp::remove_file(sftp, &path).await.map_err(|e| e.to_string())
+                                sftp::remove_file(&sftp, &path).await.map_err(|e| e.to_string())
                             }
                         }.await;
                         match res {
@@ -467,7 +591,7 @@ async fn run_connected(
                     Some(Cmd::SftpRename { from, to }) => {
                         let res = async {
                             let sftp = tools.ensure_sftp().await?;
-                            sftp::rename(sftp, &from, &to).await.map_err(|e| e.to_string())
+                            sftp::rename(&sftp, &from, &to).await.map_err(|e| e.to_string())
                         }.await;
                         match res {
                             Ok(()) => {
@@ -489,63 +613,91 @@ async fn run_connected(
                         }
                         notify.request_repaint();
                     }
-                    Some(Cmd::SftpDownload { remote, local }) => {
-                        let res = async {
-                            let sftp = tools.ensure_sftp().await?;
-                            sftp::get(sftp, &remote, &local).await.map_err(|e| e.to_string())
-                        }.await;
-                        match res {
-                            Ok(bytes) => {
-                                let _ = evt_tx.send(Evt::SftpStatus {
-                                    message: format!(
-                                        "Downloaded {} ({bytes} B)",
-                                        local.display()
-                                    ),
-                                    is_error: false,
+                    Some(Cmd::SftpDownload {
+                        id,
+                        remote,
+                        local,
+                        resume,
+                    }) => {
+                        match tools.ensure_sftp().await {
+                            Ok(sftp) => {
+                                let cancel = CancelToken::new();
+                                transfer_cancels.insert(id, cancel.clone());
+                                let tx = ensure_worker(
+                                    &mut transfer_tx,
+                                    evt_tx.clone(),
+                                    notify.clone(),
+                                );
+                                let _ = tx.send(TransferJob {
+                                    id,
+                                    kind: TransferKind::Download,
+                                    sftp,
+                                    remote,
+                                    local,
+                                    resume,
+                                    cancel,
                                 });
                             }
                             Err(e) => {
-                                let _ = evt_tx.send(Evt::SftpStatus {
-                                    message: format!("Download failed: {e}"),
-                                    is_error: true,
+                                let _ = evt_tx.send(Evt::SftpTransferState {
+                                    id,
+                                    state: TransferState::Failed(e),
+                                    bytes: 0,
                                 });
+                                notify.request_repaint();
                             }
                         }
-                        notify.request_repaint();
                     }
-                    Some(Cmd::SftpUpload { local, remote }) => {
-                        let res = async {
-                            let sftp = tools.ensure_sftp().await?;
-                            sftp::put(sftp, &local, &remote).await.map_err(|e| e.to_string())
-                        }.await;
-                        match res {
-                            Ok(bytes) => {
-                                let cur = tools.sftp_dir.clone();
-                                if let Ok((canon, entries)) = tools.list_dir(&cur).await {
-                                    let _ = evt_tx.send(Evt::SftpListed {
-                                        path: canon,
-                                        entries,
-                                        status: Some((
-                                            format!("Uploaded {remote} ({bytes} B)"),
-                                            false,
-                                        )),
-                                    });
-                                }
-                            }
-                            Err(e) => {
-                                let _ = evt_tx.send(Evt::SftpStatus {
-                                    message: format!("Upload failed: {e}"),
-                                    is_error: true,
+                    Some(Cmd::SftpUpload {
+                        id,
+                        local,
+                        remote,
+                        resume,
+                    }) => {
+                        match tools.ensure_sftp().await {
+                            Ok(sftp) => {
+                                let cancel = CancelToken::new();
+                                transfer_cancels.insert(id, cancel.clone());
+                                let tx = ensure_worker(
+                                    &mut transfer_tx,
+                                    evt_tx.clone(),
+                                    notify.clone(),
+                                );
+                                let _ = tx.send(TransferJob {
+                                    id,
+                                    kind: TransferKind::Upload,
+                                    sftp,
+                                    remote,
+                                    local,
+                                    resume,
+                                    cancel,
                                 });
                             }
+                            Err(e) => {
+                                let _ = evt_tx.send(Evt::SftpTransferState {
+                                    id,
+                                    state: TransferState::Failed(e),
+                                    bytes: 0,
+                                });
+                                notify.request_repaint();
+                            }
                         }
-                        notify.request_repaint();
+                    }
+                    Some(Cmd::SftpCancel { id }) => {
+                        if let Some(tok) = transfer_cancels.get(&id) {
+                            tok.cancel();
+                        }
                     }
                     None => break, // UI dropped the sender: shut down
                 }
             }
         }
     }
+
+    for tok in transfer_cancels.values() {
+        tok.cancel();
+    }
+    drop(transfer_tx);
 
     tools.stop_all_forwards().await;
     let _ = tools.session.disconnect().await;

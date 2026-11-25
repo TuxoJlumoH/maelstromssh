@@ -5,7 +5,8 @@
 //! browser and live port-forward manager.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -15,7 +16,7 @@ use crossterm::event::{
 use maelstromssh_core::config::{ForwardKind, ForwardRule, forward_spec, parse_forward};
 use maelstromssh_core::serial;
 use maelstromssh_core::session_log::SessionLog;
-use maelstromssh_core::sftp::{self, DirEntry, SftpSession};
+use maelstromssh_core::sftp::{self, CancelToken, DirEntry, SftpSession, TransferOptions};
 use maelstromssh_core::ssh::{Channel, ChannelMsg, Msg, Session};
 use maelstromssh_core::tcp::{Filter, TcpLine};
 use maelstromssh_core::term::Terminal;
@@ -29,6 +30,7 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::layout::{Constraint, Direction, Layout};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
 use crate::input::{ScrollAction, encode_key, encode_sgr_mouse, scroll_action};
@@ -48,7 +50,7 @@ pub struct SshBackend {
     channel: Channel<Msg>,
     forwarder: Forwarder,
     pub forwards: Vec<RunningForward>,
-    sftp: Option<SftpSession>,
+    sftp: Option<Arc<SftpSession>>,
     pub initial_error: Option<String>,
 }
 
@@ -118,12 +120,12 @@ impl SshBackend {
         Ok(format!("Stopped forward {spec}"))
     }
 
-    pub async fn ensure_sftp(&mut self) -> std::result::Result<&SftpSession, String> {
+    pub async fn ensure_sftp(&mut self) -> std::result::Result<Arc<SftpSession>, String> {
         if self.sftp.is_none() {
             let s = sftp::open(&self.session).await.map_err(|e| e.to_string())?;
-            self.sftp = Some(s);
+            self.sftp = Some(Arc::new(s));
         }
-        Ok(self.sftp.as_ref().expect("sftp initialized"))
+        Ok(Arc::clone(self.sftp.as_ref().expect("sftp initialized")))
     }
 
     pub async fn shutdown(&mut self) {
@@ -269,20 +271,54 @@ impl Backend {
 }
 
 enum PromptMode {
-    Download { remote_name: String, input: String },
-    Upload { input: String },
-    Mkdir { input: String },
-    Rename { old_name: String, input: String },
-    Goto { input: String },
-    DeleteConfirm { name: String, is_dir: bool },
-    ForwardAdd { kind: ForwardKind, input: String },
+    Download {
+        remote_name: String,
+        input: String,
+        resume: bool,
+    },
+    Upload {
+        input: String,
+        resume: bool,
+    },
+    Mkdir {
+        input: String,
+    },
+    Rename {
+        old_name: String,
+        input: String,
+    },
+    Goto {
+        input: String,
+    },
+    DeleteConfirm {
+        name: String,
+        is_dir: bool,
+    },
+    ForwardAdd {
+        kind: ForwardKind,
+        input: String,
+    },
 }
 
 impl PromptMode {
     fn label_and_input(&self) -> (&'static str, &str) {
         match self {
-            PromptMode::Download { input, .. } => ("Download to local path: ", input.as_str()),
-            PromptMode::Upload { input } => ("Upload local file path: ", input.as_str()),
+            PromptMode::Download { input, resume, .. } => {
+                let lbl = if *resume {
+                    "Download (Tab: resume ON) to: "
+                } else {
+                    "Download (Tab: resume OFF) to: "
+                };
+                (lbl, input.as_str())
+            }
+            PromptMode::Upload { input, resume } => {
+                let lbl = if *resume {
+                    "Upload (Tab: resume ON) from: "
+                } else {
+                    "Upload (Tab: resume OFF) from: "
+                };
+                (lbl, input.as_str())
+            }
             PromptMode::Mkdir { input } => ("New folder name: ", input.as_str()),
             PromptMode::Rename { input, .. } => ("Rename to: ", input.as_str()),
             PromptMode::Goto { input } => ("Go to remote path: ", input.as_str()),
@@ -301,7 +337,7 @@ impl PromptMode {
     fn input_mut(&mut self) -> Option<&mut String> {
         match self {
             PromptMode::Download { input, .. }
-            | PromptMode::Upload { input }
+            | PromptMode::Upload { input, .. }
             | PromptMode::Mkdir { input }
             | PromptMode::Rename { input, .. }
             | PromptMode::Goto { input }
@@ -309,6 +345,25 @@ impl PromptMode {
             PromptMode::DeleteConfirm { .. } => None,
         }
     }
+}
+
+struct ActiveTransfer {
+    label: String,
+    is_upload: bool,
+    done: u64,
+    total: Option<u64>,
+    cancel: CancelToken,
+}
+
+enum TransferEvt {
+    Progress {
+        done: u64,
+        total: Option<u64>,
+    },
+    Finished {
+        is_upload: bool,
+        outcome: maelstromssh_core::Result<u64>,
+    },
 }
 
 struct OverlayState {
@@ -320,6 +375,8 @@ struct OverlayState {
     forward_selected: usize,
     prompt: Option<PromptMode>,
     status: Option<(String, bool)>,
+    active_transfer: Option<ActiveTransfer>,
+    transfer_rx: Option<mpsc::UnboundedReceiver<TransferEvt>>,
 }
 
 impl OverlayState {
@@ -333,6 +390,54 @@ impl OverlayState {
             forward_selected: 0,
             prompt: None,
             status: initial_error.map(|e| (e, true)),
+            active_transfer: None,
+            transfer_rx: None,
+        }
+    }
+
+    async fn recv_transfer(&mut self) -> Option<TransferEvt> {
+        match self.transfer_rx.as_mut() {
+            Some(rx) => rx.recv().await,
+            None => std::future::pending().await,
+        }
+    }
+
+    async fn handle_transfer_evt(&mut self, tev: TransferEvt, backend: &mut Backend) {
+        match tev {
+            TransferEvt::Progress { done, total } => {
+                if let Some(t) = self.active_transfer.as_mut() {
+                    t.done = done;
+                    t.total = total;
+                }
+            }
+            TransferEvt::Finished { is_upload, outcome } => {
+                let label = self
+                    .active_transfer
+                    .as_ref()
+                    .map(|t| t.label.clone())
+                    .unwrap_or_default();
+                self.active_transfer = None;
+                self.transfer_rx = None;
+                match outcome {
+                    Ok(bytes) => {
+                        if is_upload && let Backend::Ssh(ssh) = backend {
+                            let cur = self.sftp_path.clone();
+                            self.load_dir(ssh, &cur).await;
+                        }
+                        let verb = if is_upload { "Uploaded" } else { "Downloaded" };
+                        self.status = Some((
+                            format!("{verb} '{label}' ({})", crate::render::format_size(bytes)),
+                            false,
+                        ));
+                    }
+                    Err(maelstromssh_core::Error::Cancelled) => {
+                        self.status = Some(("Transfer cancelled".into(), false));
+                    }
+                    Err(e) => {
+                        self.status = Some((format!("Transfer failed: {e}"), true));
+                    }
+                }
+            }
         }
     }
 
@@ -344,10 +449,10 @@ impl OverlayState {
             } else {
                 target_path
             };
-            let canon = sftp::canonicalize(sftp, path)
+            let canon = sftp::canonicalize(&sftp, path)
                 .await
                 .map_err(|e| e.to_string())?;
-            let entries = sftp::list(sftp, &canon).await.map_err(|e| e.to_string())?;
+            let entries = sftp::list(&sftp, &canon).await.map_err(|e| e.to_string())?;
             Ok((canon, entries))
         }
         .await;
@@ -410,11 +515,11 @@ impl OverlayState {
                         let res: std::result::Result<(), String> = async {
                             let sftp = ssh.ensure_sftp().await?;
                             if dir {
-                                sftp::remove_dir(sftp, &full)
+                                sftp::remove_dir(&sftp, &full)
                                     .await
                                     .map_err(|e| e.to_string())
                             } else {
-                                sftp::remove_file(sftp, &full)
+                                sftp::remove_file(&sftp, &full)
                                     .await
                                     .map_err(|e| e.to_string())
                             }
@@ -441,6 +546,16 @@ impl OverlayState {
                 _ => match k.code {
                     KeyCode::Esc => {
                         self.status = None;
+                    }
+                    KeyCode::Tab => {
+                        match &mut mode {
+                            PromptMode::Download { resume, .. }
+                            | PromptMode::Upload { resume, .. } => {
+                                *resume = !*resume;
+                            }
+                            _ => {}
+                        }
+                        self.prompt = Some(mode);
                     }
                     KeyCode::Backspace => {
                         if let Some(input) = mode.input_mut() {
@@ -469,7 +584,15 @@ impl OverlayState {
         }
 
         match k.code {
-            KeyCode::Esc | KeyCode::F(12) => {
+            KeyCode::Esc => {
+                if let Some(t) = self.active_transfer.as_ref() {
+                    t.cancel.cancel();
+                    self.status = Some(("Cancelling transfer…".into(), false));
+                } else {
+                    self.open = false;
+                }
+            }
+            KeyCode::F(12) => {
                 self.open = false;
             }
             KeyCode::Tab | KeyCode::BackTab => {
@@ -490,66 +613,110 @@ impl OverlayState {
 
     async fn execute_prompt(&mut self, mode: PromptMode, ssh: &mut SshBackend) {
         match mode {
-            PromptMode::Download { remote_name, input } => {
-                let dest = input.trim();
+            PromptMode::Download {
+                remote_name,
+                input,
+                resume,
+            } => {
+                if self.active_transfer.is_some() {
+                    self.status = Some((
+                        "A transfer is already running (Esc/c to cancel)".into(),
+                        true,
+                    ));
+                    return;
+                }
+                let dest = input.trim().to_string();
                 if dest.is_empty() {
                     return;
                 }
                 let remote = self.join_remote(&remote_name);
-                let res: std::result::Result<u64, String> = async {
-                    let sftp = ssh.ensure_sftp().await?;
-                    sftp::get(sftp, &remote, Path::new(dest))
-                        .await
-                        .map_err(|e| e.to_string())
-                }
-                .await;
-                match res {
-                    Ok(bytes) => {
-                        self.status = Some((
-                            format!(
-                                "Downloaded '{remote_name}' -> {dest} ({})",
-                                crate::render::format_size(bytes)
-                            ),
-                            false,
-                        ));
-                    }
+                let sftp = match ssh.ensure_sftp().await {
+                    Ok(s) => s,
                     Err(e) => {
-                        self.status = Some((format!("Download failed: {e}"), true));
+                        self.status = Some((format!("SFTP error: {e}"), true));
+                        return;
                     }
-                }
+                };
+                let cancel = CancelToken::new();
+                let (tx, rx) = mpsc::unbounded_channel();
+                self.active_transfer = Some(ActiveTransfer {
+                    label: remote_name,
+                    is_upload: false,
+                    done: 0,
+                    total: None,
+                    cancel: cancel.clone(),
+                });
+                self.transfer_rx = Some(rx);
+                let local_path = PathBuf::from(dest);
+                tokio::spawn(async move {
+                    let opts = TransferOptions {
+                        resume,
+                        cancel: Some(cancel),
+                    };
+                    let tx_progress = tx.clone();
+                    let on_progress = move |done: u64, total: Option<u64>| {
+                        let _ = tx_progress.send(TransferEvt::Progress { done, total });
+                    };
+                    let outcome =
+                        sftp::get_with(&sftp, &remote, &local_path, &opts, on_progress).await;
+                    let _ = tx.send(TransferEvt::Finished {
+                        is_upload: false,
+                        outcome,
+                    });
+                });
             }
-            PromptMode::Upload { input } => {
-                let local_str = input.trim();
+            PromptMode::Upload { input, resume } => {
+                if self.active_transfer.is_some() {
+                    self.status = Some((
+                        "A transfer is already running (Esc/c to cancel)".into(),
+                        true,
+                    ));
+                    return;
+                }
+                let local_str = input.trim().to_string();
                 if local_str.is_empty() {
                     return;
                 }
-                let local_path = Path::new(local_str);
+                let local_path = PathBuf::from(local_str);
                 let Some(file_name) = local_path.file_name().and_then(|n| n.to_str()) else {
                     self.status = Some(("Invalid local file path".into(), true));
                     return;
                 };
                 let remote = self.join_remote(file_name);
                 let fname = file_name.to_string();
-                let res: std::result::Result<u64, String> = async {
-                    let sftp = ssh.ensure_sftp().await?;
-                    sftp::put(sftp, local_path, &remote)
-                        .await
-                        .map_err(|e| e.to_string())
-                }
-                .await;
-                match res {
-                    Ok(bytes) => {
-                        let cur = self.sftp_path.clone();
-                        self.load_dir(ssh, &cur).await;
-                        self.status = Some((
-                            format!("Uploaded '{fname}' ({})", crate::render::format_size(bytes)),
-                            false,
-                        ));
-                    }
+                let sftp = match ssh.ensure_sftp().await {
+                    Ok(s) => s,
                     Err(e) => {
-                        self.status = Some((format!("Upload failed: {e}"), true));
+                        self.status = Some((format!("SFTP error: {e}"), true));
+                        return;
                     }
-                }
+                };
+                let cancel = CancelToken::new();
+                let (tx, rx) = mpsc::unbounded_channel();
+                self.active_transfer = Some(ActiveTransfer {
+                    label: fname,
+                    is_upload: true,
+                    done: 0,
+                    total: None,
+                    cancel: cancel.clone(),
+                });
+                self.transfer_rx = Some(rx);
+                tokio::spawn(async move {
+                    let opts = TransferOptions {
+                        resume,
+                        cancel: Some(cancel),
+                    };
+                    let tx_progress = tx.clone();
+                    let on_progress = move |done: u64, total: Option<u64>| {
+                        let _ = tx_progress.send(TransferEvt::Progress { done, total });
+                    };
+                    let outcome =
+                        sftp::put_with(&sftp, &local_path, &remote, &opts, on_progress).await;
+                    let _ = tx.send(TransferEvt::Finished {
+                        is_upload: true,
+                        outcome,
+                    });
+                });
             }
             PromptMode::Mkdir { input } => {
                 let name = input.trim();
@@ -560,7 +727,7 @@ impl OverlayState {
                 let folder = name.to_string();
                 let res: std::result::Result<(), String> = async {
                     let sftp = ssh.ensure_sftp().await?;
-                    sftp::create_dir(sftp, &remote)
+                    sftp::create_dir(&sftp, &remote)
                         .await
                         .map_err(|e| e.to_string())
                 }
@@ -586,7 +753,7 @@ impl OverlayState {
                 let target = new_name.to_string();
                 let res: std::result::Result<(), String> = async {
                     let sftp = ssh.ensure_sftp().await?;
-                    sftp::rename(sftp, &from, &to)
+                    sftp::rename(&sftp, &from, &to)
                         .await
                         .map_err(|e| e.to_string())
                 }
@@ -668,6 +835,12 @@ impl OverlayState {
                     self.load_dir(ssh, &next).await;
                 }
             }
+            KeyCode::Char('c') => {
+                if let Some(t) = self.active_transfer.as_ref() {
+                    t.cancel.cancel();
+                    self.status = Some(("Cancelling transfer…".into(), false));
+                }
+            }
             KeyCode::Char('d') => {
                 if let Some(row) = self.files.get(self.file_selected)
                     && !row.is_dir
@@ -676,12 +849,14 @@ impl OverlayState {
                     self.prompt = Some(PromptMode::Download {
                         remote_name: row.name.clone(),
                         input: format!("./{}", row.name),
+                        resume: false,
                     });
                 }
             }
             KeyCode::Char('u') => {
                 self.prompt = Some(PromptMode::Upload {
                     input: String::new(),
+                    resume: false,
                 });
             }
             KeyCode::Char('m') => {
@@ -931,6 +1106,10 @@ async fn event_loop(
                     }
                 }
             }
+            Some(tev) = overlay.recv_transfer() => {
+                overlay.handle_transfer_evt(tev, backend).await;
+                overlay_dirty = true;
+            }
         }
 
         if quit || !connected {
@@ -1063,6 +1242,26 @@ fn draw_frame(
         .status
         .as_ref()
         .map(|(msg, is_err)| (msg.as_str(), *is_err));
+    let transfer_line = overlay.active_transfer.as_ref().map(|t| {
+        let arrow = if t.is_upload { "↑" } else { "↓" };
+        let name = &t.label;
+        match t.total {
+            Some(total) if total > 0 => {
+                let pct = (t.done as f64 / total as f64 * 100.0).clamp(0.0, 100.0) as u32;
+                format!(
+                    " {arrow} {name}  {pct}% ({} / {}) — Esc/c cancel",
+                    crate::render::format_size(t.done),
+                    crate::render::format_size(total)
+                )
+            }
+            _ => {
+                format!(
+                    " {arrow} {name}  {} — Esc/c cancel",
+                    crate::render::format_size(t.done)
+                )
+            }
+        }
+    });
 
     terminal.draw(|f| {
         let area = f.area();
@@ -1096,6 +1295,7 @@ fn draw_frame(
                     forward_selected: overlay.forward_selected,
                     prompt: prompt_view,
                     status: status_view,
+                    transfer: transfer_line.as_deref(),
                 },
                 chunks[0],
             );

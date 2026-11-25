@@ -1,13 +1,13 @@
 //! SFTP front-end: one-shot `get`/`put`/`ls`/… commands and an interactive
 //! shell, both driving the `maelstromssh_core::sftp` engine.
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Subcommand;
 use maelstromssh_core::paths::expand_tilde;
-use maelstromssh_core::sftp::{self, DirEntry, SftpSession};
+use maelstromssh_core::sftp::{self, DirEntry, SftpSession, TransferOptions};
 use maelstromssh_core::ssh::Session;
 
 /// The scriptable SFTP operation, when `maelstromssh sftp <target> <op>` is used.
@@ -17,11 +17,15 @@ pub enum SftpOp {
     Get {
         remote: String,
         local: Option<PathBuf>,
+        #[arg(short = 'c', long = "resume")]
+        resume: bool,
     },
     /// Upload a local file (default remote name = local basename).
     Put {
         local: PathBuf,
         remote: Option<String>,
+        #[arg(short = 'c', long = "resume")]
+        resume: bool,
     },
     /// List a remote directory.
     Ls { path: Option<String> },
@@ -37,13 +41,21 @@ pub enum SftpOp {
 pub async fn run(session: &Session, op: SftpOp) -> Result<()> {
     let sftp = sftp::open(session).await?;
     match op {
-        SftpOp::Get { remote, local } => {
+        SftpOp::Get {
+            remote,
+            local,
+            resume,
+        } => {
             let local = local.unwrap_or_else(|| PathBuf::from(remote_basename(&remote)));
-            do_get(&sftp, &remote, &local).await
+            do_get(&sftp, &remote, &local, resume).await
         }
-        SftpOp::Put { local, remote } => {
+        SftpOp::Put {
+            local,
+            remote,
+            resume,
+        } => {
             let remote = remote.unwrap_or_else(|| local_basename(&local));
-            do_put(&sftp, &local, &remote).await
+            do_put(&sftp, &local, &remote, resume).await
         }
         SftpOp::Ls { path } => do_ls(&sftp, path.as_deref().unwrap_or(".")).await,
         SftpOp::Rm { path } => do_rm(&sftp, &path).await,
@@ -54,15 +66,73 @@ pub async fn run(session: &Session, op: SftpOp) -> Result<()> {
 
 // ---- shared operations (used by both one-shot and the shell) ------------
 
-async fn do_get(sftp: &SftpSession, remote: &str, local: &Path) -> Result<()> {
-    let n = sftp::get(sftp, remote, local).await?;
-    eprintln!("Downloaded {n} bytes -> {}", local.display());
+async fn do_get(sftp: &SftpSession, remote: &str, local: &Path, resume: bool) -> Result<()> {
+    let is_tty = std::io::stderr().is_terminal();
+    let name = remote_basename(remote);
+    let opts = TransferOptions {
+        resume,
+        cancel: None,
+    };
+    let n = sftp::get_with(sftp, remote, local, &opts, |done, total| {
+        if is_tty {
+            let mut stderr = std::io::stderr();
+            match total {
+                Some(tot) if tot > 0 => {
+                    let pct = (done as f64 / tot as f64 * 100.0).clamp(0.0, 100.0) as u32;
+                    let _ = write!(stderr, "\r\x1b[2K{name}  {pct}% ({done} / {tot})");
+                }
+                _ => {
+                    let _ = write!(stderr, "\r\x1b[2K{name}  {done}");
+                }
+            }
+            let _ = stderr.flush();
+        }
+    })
+    .await?;
+
+    if is_tty {
+        eprint!("\r\x1b[2K");
+    }
+    if resume && n == 0 {
+        eprintln!("Already complete -> {}", local.display());
+    } else {
+        eprintln!("Downloaded {n} bytes -> {}", local.display());
+    }
     Ok(())
 }
 
-async fn do_put(sftp: &SftpSession, local: &Path, remote: &str) -> Result<()> {
-    let n = sftp::put(sftp, local, remote).await?;
-    eprintln!("Uploaded {n} bytes -> {remote}");
+async fn do_put(sftp: &SftpSession, local: &Path, remote: &str, resume: bool) -> Result<()> {
+    let is_tty = std::io::stderr().is_terminal();
+    let name = local_basename(local);
+    let opts = TransferOptions {
+        resume,
+        cancel: None,
+    };
+    let n = sftp::put_with(sftp, local, remote, &opts, |done, total| {
+        if is_tty {
+            let mut stderr = std::io::stderr();
+            match total {
+                Some(tot) if tot > 0 => {
+                    let pct = (done as f64 / tot as f64 * 100.0).clamp(0.0, 100.0) as u32;
+                    let _ = write!(stderr, "\r\x1b[2K{name}  {pct}% ({done} / {tot})");
+                }
+                _ => {
+                    let _ = write!(stderr, "\r\x1b[2K{name}  {done}");
+                }
+            }
+            let _ = stderr.flush();
+        }
+    })
+    .await?;
+
+    if is_tty {
+        eprint!("\r\x1b[2K");
+    }
+    if resume && n == 0 {
+        eprintln!("Already complete -> {remote}");
+    } else {
+        eprintln!("Uploaded {n} bytes -> {remote}");
+    }
     Ok(())
 }
 
@@ -139,29 +209,37 @@ pub async fn shell(session: &Session) -> Result<()> {
                     eprintln!("ls: {e}");
                 }
             }
-            Repl::Get { remote, local } => {
+            Repl::Get {
+                remote,
+                local,
+                resume,
+            } => {
                 if remote.is_empty() {
-                    eprintln!("usage: get <remote> [local]");
+                    eprintln!("usage: get [-c|--resume] <remote> [local]");
                     continue;
                 }
                 let target = resolve_remote(&cwd, &remote);
                 let local = local
                     .map(expand_tilde)
                     .unwrap_or_else(|| PathBuf::from(remote_basename(&remote)));
-                if let Err(e) = do_get(&sftp, &target, &local).await {
+                if let Err(e) = do_get(&sftp, &target, &local, resume).await {
                     eprintln!("get: {e}");
                 }
             }
-            Repl::Put { local, remote } => {
+            Repl::Put {
+                local,
+                remote,
+                resume,
+            } => {
                 if local.is_empty() {
-                    eprintln!("usage: put <local> [remote]");
+                    eprintln!("usage: put [-c|--resume] <local> [remote]");
                     continue;
                 }
                 let local = expand_tilde(&local);
                 let target = remote
                     .map(|r| resolve_remote(&cwd, &r))
                     .unwrap_or_else(|| resolve_remote(&cwd, &local_basename(&local)));
-                if let Err(e) = do_put(&sftp, &local, &target).await {
+                if let Err(e) = do_put(&sftp, &local, &target, resume).await {
                     eprintln!("put: {e}");
                 }
             }
@@ -255,19 +333,19 @@ fn list_local(path: Option<&str>) -> std::io::Result<()> {
 fn print_help() {
     println!(
         "Commands:\n\
-         \x20 get <remote> [local]   download a file\n\
-         \x20 put <local> [remote]   upload a file\n\
-         \x20 ls [path]              list a remote directory\n\
-         \x20 cd <path>              change remote directory\n\
-         \x20 pwd                    print remote directory\n\
-         \x20 rm <path>              remove a remote file\n\
-         \x20 mkdir <path>           create a remote directory\n\
-         \x20 rmdir <path>           remove a remote directory\n\
-         \x20 rename <from> <to>     rename a remote file/directory\n\
-         \x20 lls [path]             list a local directory\n\
-         \x20 lcd <path>             change local directory\n\
-         \x20 lpwd                   print local directory\n\
-         \x20 exit / quit            close the session"
+         \x20 get [-c|--resume] <remote> [local]   download a file\n\
+         \x20 put [-c|--resume] <local> [remote]   upload a file\n\
+         \x20 ls [path]                            list a remote directory\n\
+         \x20 cd <path>                            change remote directory\n\
+         \x20 pwd                                  print remote directory\n\
+         \x20 rm <path>                            remove a remote file\n\
+         \x20 mkdir <path>                         create a remote directory\n\
+         \x20 rmdir <path>                         remove a remote directory\n\
+         \x20 rename <from> <to>                   rename a remote file/directory\n\
+         \x20 lls [path]                           list a local directory\n\
+         \x20 lcd <path>                           change local directory\n\
+         \x20 lpwd                                 print local directory\n\
+         \x20 exit / quit                          close the session"
     );
 }
 
@@ -304,10 +382,12 @@ pub enum Repl {
     Get {
         remote: String,
         local: Option<String>,
+        resume: bool,
     },
     Put {
         local: String,
         remote: Option<String>,
+        resume: bool,
     },
     Rm(String),
     Mkdir(String),
@@ -338,14 +418,34 @@ pub fn parse_repl(line: &str) -> Repl {
         "ls" | "dir" => Repl::Ls(arg(0)),
         "cd" => Repl::Cd(arg(0).unwrap_or_default()),
         "pwd" => Repl::Pwd,
-        "get" => Repl::Get {
-            remote: arg(0).unwrap_or_default(),
-            local: arg(1),
-        },
-        "put" => Repl::Put {
-            local: arg(0).unwrap_or_default(),
-            remote: arg(1),
-        },
+        "get" => {
+            let (resume, rem_idx, loc_idx) = if args.first().copied() == Some("-c")
+                || args.first().copied() == Some("--resume")
+            {
+                (true, 1, 2)
+            } else {
+                (false, 0, 1)
+            };
+            Repl::Get {
+                remote: arg(rem_idx).unwrap_or_default(),
+                local: arg(loc_idx),
+                resume,
+            }
+        }
+        "put" => {
+            let (resume, loc_idx, rem_idx) = if args.first().copied() == Some("-c")
+                || args.first().copied() == Some("--resume")
+            {
+                (true, 1, 2)
+            } else {
+                (false, 0, 1)
+            };
+            Repl::Put {
+                local: arg(loc_idx).unwrap_or_default(),
+                remote: arg(rem_idx),
+                resume,
+            }
+        }
         "rm" => Repl::Rm(arg(0).unwrap_or_default()),
         "mkdir" => Repl::Mkdir(arg(0).unwrap_or_default()),
         "rmdir" => Repl::Rmdir(arg(0).unwrap_or_default()),
@@ -392,6 +492,7 @@ mod tests {
             Repl::Get {
                 remote: "foo.txt".into(),
                 local: None,
+                resume: false,
             }
         );
         assert_eq!(
@@ -399,6 +500,43 @@ mod tests {
             Repl::Get {
                 remote: "foo.txt".into(),
                 local: Some("local.bin".into()),
+                resume: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_get_put_resume() {
+        assert_eq!(
+            parse_repl("get -c foo.txt"),
+            Repl::Get {
+                remote: "foo.txt".into(),
+                local: None,
+                resume: true,
+            }
+        );
+        assert_eq!(
+            parse_repl("get --resume foo.txt local.bin"),
+            Repl::Get {
+                remote: "foo.txt".into(),
+                local: Some("local.bin".into()),
+                resume: true,
+            }
+        );
+        assert_eq!(
+            parse_repl("put -c x.bin"),
+            Repl::Put {
+                local: "x.bin".into(),
+                remote: None,
+                resume: true,
+            }
+        );
+        assert_eq!(
+            parse_repl("put --resume x.bin remote.bin"),
+            Repl::Put {
+                local: "x.bin".into(),
+                remote: Some("remote.bin".into()),
+                resume: true,
             }
         );
     }
@@ -410,6 +548,7 @@ mod tests {
             Repl::Put {
                 local: "x.bin".into(),
                 remote: None,
+                resume: false,
             }
         );
         assert_eq!(

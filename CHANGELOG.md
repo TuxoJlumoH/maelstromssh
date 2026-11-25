@@ -4,6 +4,7 @@
 
 ### Added
 
+- SFTP transfer queue with progress, cancel, and resume across core (`get_with`/`put_with`, `TransferOptions`, `CancelToken`), desktop window (non-blocking transfer queue with progress bars, speed, and cancel/resume), terminal UI (in-flight progress indicator, `c`/`Esc` cancellation, resume toggle with `Tab`), and CLI (`-c`/`--resume` flag and live TTY progress).
 - Desktop window: *SSH keys* (list, copy, generate) and *Known hosts* (view, remove) windows.
 
 ## 0.5.0 — 2026-11-25

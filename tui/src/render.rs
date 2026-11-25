@@ -140,6 +140,7 @@ pub struct OverlayView<'a> {
     pub forward_selected: usize,
     pub prompt: Option<(&'a str, &'a str)>,
     pub status: Option<(&'a str, bool)>,
+    pub transfer: Option<&'a str>,
 }
 
 impl Widget for OverlayView<'_> {
@@ -162,6 +163,7 @@ impl Widget for OverlayView<'_> {
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Min(1),
+                Constraint::Length(if self.transfer.is_some() { 1 } else { 0 }),
                 Constraint::Length(1),
                 Constraint::Length(1),
             ])
@@ -255,11 +257,16 @@ impl Widget for OverlayView<'_> {
                     Paragraph::new(lines).render(list_area, buf);
                 }
 
+                let footer_text = if self.transfer.is_some() {
+                    " Enter: open  Bksp: up  d: download  u: upload  m: mkdir  r: rename  x: del  g: goto  R: refresh  c/Esc: cancel"
+                } else {
+                    " Enter: open  Bksp: up  d: download  u: upload  m: mkdir  r: rename  x: del  g: goto  R: refresh"
+                };
                 Paragraph::new(Line::styled(
-                    " Enter: open  Bksp: up  d: download  u: upload  m: mkdir  r: rename  x: del  g: goto  R: refresh",
+                    footer_text,
                     Style::default().add_modifier(Modifier::DIM),
                 ))
-                .render(chunks[4], buf);
+                .render(chunks[5], buf);
             }
             OverlayTab::Forwards => {
                 Paragraph::new(Line::styled(
@@ -303,8 +310,15 @@ impl Widget for OverlayView<'_> {
                     " l: add local (-L)  r: add remote (-R)  d: add SOCKS5 (-D)  x/Del: stop selected",
                     Style::default().add_modifier(Modifier::DIM),
                 ))
-                .render(chunks[4], buf);
+                .render(chunks[5], buf);
             }
+        }
+
+        if let Some(t_str) = self.transfer {
+            let style = Style::default()
+                .fg(ratatui::style::Color::Cyan)
+                .add_modifier(Modifier::BOLD);
+            Paragraph::new(Line::styled(t_str, style)).render(chunks[3], buf);
         }
 
         if let Some((label, input)) = self.prompt {
@@ -316,7 +330,7 @@ impl Widget for OverlayView<'_> {
                 Span::raw(input),
                 Span::styled("█", Style::default().add_modifier(Modifier::SLOW_BLINK)),
             ]);
-            Paragraph::new(line).render(chunks[3], buf);
+            Paragraph::new(line).render(chunks[4], buf);
         } else if let Some((msg, is_err)) = self.status {
             let style = if is_err {
                 Style::default()
@@ -325,7 +339,7 @@ impl Widget for OverlayView<'_> {
             } else {
                 Style::default().fg(ratatui::style::Color::Green)
             };
-            Paragraph::new(Line::styled(format!(" {msg}"), style)).render(chunks[3], buf);
+            Paragraph::new(Line::styled(format!(" {msg}"), style)).render(chunks[4], buf);
         }
     }
 }

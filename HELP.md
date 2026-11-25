@@ -296,30 +296,34 @@ One-shot (scriptable) or interactive. Shares the `--port`/`--identity`/
 ```bash
 maelstromssh sftp user@host                      # interactive shell
 maelstromssh sftp user@host get app.log          # download to ./app.log
+maelstromssh sftp user@host get -c app.log       # resume partial download
 maelstromssh sftp user@host get app.log /tmp/a   # download to a specific path
 maelstromssh sftp user@host put ./app.log app.log
+maelstromssh sftp user@host put -c ./app.log     # resume partial upload
 maelstromssh sftp user@host ls /var/log
 maelstromssh sftp user@host rm app.log
 maelstromssh sftp user@host mkdir backups
 maelstromssh sftp user@host rename old.txt new.txt
 ```
 
-One-shot subcommands: `get <remote> [local]`, `put <local> [remote]`,
+One-shot subcommands: `get [-c|--resume] <remote> [local]`, `put [-c|--resume] <local> [remote]`,
 `ls [path]`, `rm <path>`, `mkdir <path>`, `rename <from> <to>`.
 
 Interactive shell commands:
 
 | Command | Description |
 |---|---|
-| `get <remote> [local]` | download a file |
-| `put <local> [remote]` | upload a file |
+| `get [-c|--resume] <remote> [local]` | download a file (optional resume) |
+| `put [-c|--resume] <local> [remote]` | upload a file (optional resume) |
 | `ls [path]` / `cd <path>` / `pwd` | remote listing/navigation |
 | `rm` / `mkdir` / `rmdir` / `rename` | remote mutations |
 | `lls [path]` / `lcd <path>` / `lpwd` | local listing/navigation |
 | `help` / `exit` | help / quit |
 
 Transfers stream in 64 KiB chunks (no whole-file buffering); single files
-only (recursive directory transfer is not implemented yet).
+only (recursive directory transfer is not implemented yet). When running
+interactively on a terminal, live transfer progress (bytes transferred, total,
+percentage, and speed) is printed to stderr.
 
 ---
 
@@ -366,6 +370,8 @@ tabs, `Esc`/`F12` closes it):
 | Files (SFTP) | `↑/↓` or `j/k` move · `Enter` open · `Backspace` up · `d` download · `u` upload · `m` new folder · `r` rename · `x`/`Del` delete · `g` go to path · `R` refresh |
 | Forwards | `l` add local (`-L`) · `r` add remote (`-R`) · `d` add SOCKS5 (`-D`) · `x`/`Del` stop the selected forward |
 
+While a file transfer is in progress, the panel displays live transfer progress (bytes transferred, total, percentage, and speed). Press `c` or `Esc` to cancel the active transfer without closing the panel. When entering local or remote filenames in download/upload prompts, press `Tab` to toggle resume mode.
+
 ---
 
 ## 5. GUI — `maelstromssh-gui`
@@ -397,7 +403,11 @@ form, prefilled.
 On SSH connections the status bar has three buttons:
 
 - **Files (SFTP)** — browse folders, download, upload to the current folder,
-  rename, delete and create folders.
+  rename, delete and create folders. Transfers run asynchronously in a non-blocking
+  transfer queue with live progress bars, speed metrics, cancel, and resume
+  support. If a partial target file is detected when starting a transfer, a one-click
+  Resume option is provided. The status bar button updates with the active transfer
+  count: `Files (SFTP) (N)`.
 - **Forwards** — add `-L`/`-R`/`-D` forwards (same syntax as the CLI) and stop
   them while connected. `-L/-R/-D` on the command line and a profile's
   forwards start on connect.
@@ -600,7 +610,11 @@ The engine every front-end uses. No UI/rendering code lives here.
 
 - `open(&Session) -> SftpSession` — opens the subsystem channel.
 - `get(sftp, remote, local) -> Result<u64>` — streaming download (64 KiB chunks).
+- `get_with(sftp, remote, local, opts, cancel) -> Result<u64>` — streaming download with resume and progress callback.
 - `put(sftp, local, remote) -> Result<u64>` — streaming upload.
+- `put_with(sftp, local, remote, opts, cancel) -> Result<u64>` — streaming upload with resume and progress callback.
+- `TransferOptions` — `{ resume: bool, offset: u64, on_progress: Option<Box<dyn FnMut(u64, u64) + Send>> }`.
+- `CancelToken` — cooperatively cancel transfers (`CancelToken::new()`, `.cancel()`, `.is_cancelled()`).
 - `list(sftp, path) -> Result<Vec<DirEntry>>` — sorted directory listing
   (`DirEntry { name, is_dir, is_symlink, size, modified, permissions }`;
   symlinks to directories count as directories).

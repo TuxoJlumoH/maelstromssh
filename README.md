@@ -22,7 +22,7 @@
 ## Features
 
 - **SSH** — works like OpenSSH out of the box: `ssh-agent`, `~/.ssh` keys, password and keyboard-interactive (2FA), `~/.ssh/config` host aliases, jump hosts (`-J` / `ProxyJump`), and trust-on-first-use host-key verification.
-- **SFTP** — scriptable `get`/`put`/`ls`/`rm`/`mkdir`/`rename`, an interactive shell, and a file browser in the terminal UI, the desktop window and the web UI (with drag and drop).
+- **SFTP** — transfer queue with progress and resume, scriptable `get`/`put`/`ls`/`rm`/`mkdir`/`rename`, an interactive shell, and a file browser in the terminal UI, the desktop window and the web UI (with drag and drop).
 - **Port forwarding** — local, remote, and dynamic (SOCKS5 proxy); the terminal UI, desktop window and web UI add and stop forwards while connected.
 - **Serial / COM ports** — open `/dev/ttyUSB0`, `/dev/ttyACM0`, `/dev/ttyS0` etc. with any baud rate, data bits, parity, stop bits and flow control, and send a break; in every front-end.
 - **Telnet and raw TCP** — for old switches, routers and serial-over-IP adapters: Telnet option negotiation (window size, terminal type, break), or bytes passed through unchanged.
@@ -166,7 +166,6 @@ packaging/              — desktop entry, Arch PKGBUILD
 ## Roadmap
 
 - Several sessions in one desktop window (tabs).
-- SFTP transfer queue with progress and resume.
 
 ## Documentation
 

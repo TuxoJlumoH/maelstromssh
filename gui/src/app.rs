@@ -4,7 +4,7 @@
 //! task (see [`crate::ssh`]); this module is purely single-threaded.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, pos2, vec2};
 use maelstromssh_core::config::{
@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 use crate::keys::{self, KeyOut};
 use crate::manage::{self, KeysWindow, KnownHostsWindow};
 use crate::paint::{self, Palette};
-use crate::ssh::{self, Cmd, Evt, ForwardItem, Question};
+use crate::ssh::{self, Cmd, Evt, ForwardItem, Question, TransferKind, TransferState};
 
 /// Startup arguments passed from `main`.
 #[derive(Clone)]
@@ -486,6 +486,9 @@ pub struct GuiApp {
     sftp_local_path: String,
     sftp_mkdir_name: String,
     sftp_rename_to: String,
+    sftp_resume: bool,
+    sftp_transfers: Vec<TransferEntry>,
+    sftp_next_transfer_id: u64,
 
     show_forwards: bool,
     forwards: Vec<ForwardItem>,
@@ -495,6 +498,52 @@ pub struct GuiApp {
 
     keys_window: KeysWindow,
     known_hosts_window: KnownHostsWindow,
+}
+
+struct TransferEntry {
+    id: u64,
+    kind: TransferKind,
+    remote: String,
+    local: PathBuf,
+    display_name: String,
+    done: u64,
+    total: Option<u64>,
+    state: TransferState,
+    speed_bps: f64,
+    speed_sample_at: Option<Instant>,
+    speed_sample_bytes: u64,
+}
+
+pub fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+pub fn format_speed(bps: f64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * KIB;
+    const GIB: f64 = 1024.0 * MIB;
+
+    if bps >= GIB {
+        format!("{:.1} GiB/s", bps / GIB)
+    } else if bps >= MIB {
+        format!("{:.1} MiB/s", bps / MIB)
+    } else if bps >= KIB {
+        format!("{:.1} KiB/s", bps / KIB)
+    } else {
+        format!("{:.0} B/s", bps)
+    }
 }
 
 impl GuiApp {
@@ -548,6 +597,9 @@ impl GuiApp {
             sftp_local_path: String::new(),
             sftp_mkdir_name: String::new(),
             sftp_rename_to: String::new(),
+            sftp_resume: false,
+            sftp_transfers: Vec::new(),
+            sftp_next_transfer_id: 1,
             show_forwards: false,
             forwards: Vec::new(),
             forward_kind: ForwardKind::Local,
@@ -590,6 +642,9 @@ impl GuiApp {
         self.sftp_entries.clear();
         self.sftp_selected = None;
         self.sftp_status = None;
+        self.sftp_resume = false;
+        self.sftp_transfers.clear();
+        self.sftp_next_transfer_id = 1;
         self.show_forwards = false;
         self.forwards.clear();
         self.forward_status = None;
@@ -607,6 +662,49 @@ impl GuiApp {
         self.evt_rx = Some(evt_rx);
         self.term = Terminal::new(self.cols, self.rows);
         self.state = State::Connecting;
+    }
+
+    fn queue_transfer(&mut self, kind: TransferKind, remote: String, local: PathBuf, resume: bool) {
+        let id = self.sftp_next_transfer_id;
+        self.sftp_next_transfer_id += 1;
+        let display_name = match kind {
+            TransferKind::Download => remote.rsplit('/').next().unwrap_or(&remote).to_string(),
+            TransferKind::Upload => local
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string(),
+        };
+        self.sftp_transfers.push(TransferEntry {
+            id,
+            kind,
+            remote: remote.clone(),
+            local: local.clone(),
+            display_name,
+            done: 0,
+            total: None,
+            state: TransferState::Queued,
+            speed_bps: 0.0,
+            speed_sample_at: None,
+            speed_sample_bytes: 0,
+        });
+        if let Some(tx) = &self.cmd_tx {
+            let cmd = match kind {
+                TransferKind::Download => Cmd::SftpDownload {
+                    id,
+                    remote,
+                    local,
+                    resume,
+                },
+                TransferKind::Upload => Cmd::SftpUpload {
+                    id,
+                    local,
+                    remote,
+                    resume,
+                },
+            };
+            let _ = tx.send(cmd);
+        }
     }
 
     fn join_remote(&self, name: &str) -> String {
@@ -661,6 +759,79 @@ impl eframe::App for GuiApp {
                         self.sftp_selected = None;
                         if status.is_some() {
                             self.sftp_status = status;
+                        }
+                    }
+                    Evt::SftpTransferProgress { id, done, total } => {
+                        if let Some(entry) = self.sftp_transfers.iter_mut().find(|e| e.id == id) {
+                            entry.done = done;
+                            entry.total = total;
+                            let now = Instant::now();
+                            match entry.speed_sample_at {
+                                None => {
+                                    entry.speed_sample_at = Some(now);
+                                    entry.speed_sample_bytes = done;
+                                }
+                                Some(prev_time) => {
+                                    let elapsed = now.duration_since(prev_time).as_secs_f64();
+                                    if elapsed >= 0.5 {
+                                        let transferred =
+                                            done.saturating_sub(entry.speed_sample_bytes);
+                                        let sample_bps = (transferred as f64) / elapsed;
+                                        entry.speed_bps = if entry.speed_bps == 0.0 {
+                                            sample_bps
+                                        } else {
+                                            0.7 * entry.speed_bps + 0.3 * sample_bps
+                                        };
+                                        entry.speed_sample_at = Some(now);
+                                        entry.speed_sample_bytes = done;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Evt::SftpTransferState { id, state, bytes } => {
+                        if let Some(entry) = self.sftp_transfers.iter_mut().find(|e| e.id == id) {
+                            entry.state = state.clone();
+                            match &state {
+                                TransferState::Running => {
+                                    entry.speed_sample_at = None;
+                                    entry.speed_bps = 0.0;
+                                }
+                                TransferState::Done => {
+                                    if entry.kind == TransferKind::Upload
+                                        && self.show_sftp
+                                        && !self.sftp_path.is_empty()
+                                        && let Some(tx) = &self.cmd_tx
+                                    {
+                                        let _ = tx.send(Cmd::SftpList {
+                                            path: self.sftp_path.clone(),
+                                        });
+                                    }
+                                    let verb = match entry.kind {
+                                        TransferKind::Download => "Downloaded",
+                                        TransferKind::Upload => "Uploaded",
+                                    };
+                                    self.sftp_status = Some((
+                                        format!(
+                                            "{verb} {} ({})",
+                                            entry.display_name,
+                                            format_bytes(bytes)
+                                        ),
+                                        false,
+                                    ));
+                                }
+                                TransferState::Cancelled => {
+                                    self.sftp_status =
+                                        Some((format!("Cancelled {}", entry.display_name), false));
+                                }
+                                TransferState::Failed(err) => {
+                                    self.sftp_status = Some((
+                                        format!("Transfer failed ({}): {err}", entry.display_name),
+                                        true,
+                                    ));
+                                }
+                                TransferState::Queued => {}
+                            }
                         }
                     }
                     Evt::SftpStatus { message, is_error } => {
@@ -1316,6 +1487,10 @@ impl GuiApp {
                             .hint_text("./filename or /path/to/local/file")
                             .desired_width(220.0),
                     );
+                    ui.checkbox(&mut self.sftp_resume, "Resume partial file");
+                });
+
+                ui.horizontal(|ui| {
                     let can_download = self
                         .sftp_selected
                         .and_then(|i| self.sftp_entries.get(i))
@@ -1332,9 +1507,12 @@ impl GuiApp {
                             PathBuf::from(self.sftp_local_path.trim())
                         };
                         let remote = self.join_remote(&entry.name);
-                        if let Some(tx) = &self.cmd_tx {
-                            let _ = tx.send(Cmd::SftpDownload { remote, local });
-                        }
+                        self.queue_transfer(
+                            TransferKind::Download,
+                            remote,
+                            local,
+                            self.sftp_resume,
+                        );
                     }
                     if ui.button("Upload to current dir").clicked() {
                         let local_str = self.sftp_local_path.trim();
@@ -1342,9 +1520,12 @@ impl GuiApp {
                             let local = PathBuf::from(local_str);
                             if let Some(fname) = local.file_name().and_then(|n| n.to_str()) {
                                 let remote = self.join_remote(fname);
-                                if let Some(tx) = &self.cmd_tx {
-                                    let _ = tx.send(Cmd::SftpUpload { local, remote });
-                                }
+                                self.queue_transfer(
+                                    TransferKind::Upload,
+                                    remote,
+                                    local,
+                                    self.sftp_resume,
+                                );
                             } else {
                                 self.sftp_status =
                                     Some(("Enter a valid local file path".into(), true));
@@ -1352,6 +1533,105 @@ impl GuiApp {
                         }
                     }
                 });
+
+                // Partial file hints and resume buttons
+                let partial_download = if let Some(entry) =
+                    self.sftp_selected.and_then(|i| self.sftp_entries.get(i))
+                {
+                    if !entry.is_dir {
+                        let local = if self.sftp_local_path.trim().is_empty() {
+                            PathBuf::from(&entry.name)
+                        } else {
+                            PathBuf::from(self.sftp_local_path.trim())
+                        };
+                        if let Ok(meta) = std::fs::metadata(&local) {
+                            let local_len = meta.len();
+                            if local_len > 0 && local_len < entry.size {
+                                Some((entry.name.clone(), local, local_len, entry.size))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some((remote_name, local, local_len, entry_size)) = partial_download {
+                    let mut resume_clicked = false;
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "Partial local file ({} / {})",
+                            format_bytes(local_len),
+                            format_bytes(entry_size)
+                        ));
+                        if ui.small_button("Resume download").clicked() {
+                            resume_clicked = true;
+                        }
+                    });
+                    if resume_clicked {
+                        let remote = self.join_remote(&remote_name);
+                        self.queue_transfer(TransferKind::Download, remote, local, true);
+                    }
+                }
+
+                let partial_upload = {
+                    let local_str = self.sftp_local_path.trim();
+                    if !local_str.is_empty() {
+                        let local = PathBuf::from(local_str);
+                        if let Ok(meta) = std::fs::metadata(&local) {
+                            let local_len = meta.len();
+                            if let Some(fname) = local.file_name().and_then(|n| n.to_str()) {
+                                if let Some(remote_entry) = self
+                                    .sftp_entries
+                                    .iter()
+                                    .find(|e| e.name == fname && !e.is_dir)
+                                {
+                                    if remote_entry.size > 0 && remote_entry.size < local_len {
+                                        Some((
+                                            fname.to_string(),
+                                            local,
+                                            remote_entry.size,
+                                            local_len,
+                                        ))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some((fname, local, remote_size, local_len)) = partial_upload {
+                    let mut resume_clicked = false;
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "Partial remote file ({} / {})",
+                            format_bytes(remote_size),
+                            format_bytes(local_len)
+                        ));
+                        if ui.small_button("Resume upload").clicked() {
+                            resume_clicked = true;
+                        }
+                    });
+                    if resume_clicked {
+                        let remote = self.join_remote(&fname);
+                        self.queue_transfer(TransferKind::Upload, remote, local, true);
+                    }
+                }
 
                 ui.horizontal(|ui| {
                     ui.label("New folder:");
@@ -1376,6 +1656,106 @@ impl GuiApp {
                     ui.add_space(4.0);
                     let color = if is_err { ERROR_RED } else { OK_GREEN };
                     ui.colored_label(color, msg.as_str());
+                }
+
+                if !self.sftp_transfers.is_empty() {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.strong("Transfers");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Clear finished").clicked() {
+                                self.sftp_transfers.retain(|e| {
+                                    matches!(
+                                        e.state,
+                                        TransferState::Queued | TransferState::Running
+                                    )
+                                });
+                            }
+                        });
+                    });
+
+                    let mut to_resume = None;
+                    egui::ScrollArea::vertical()
+                        .id_salt("sftp_transfers")
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            for entry in &mut self.sftp_transfers {
+                                ui.horizontal(|ui| {
+                                    let arrow = match entry.kind {
+                                        TransferKind::Download => "↓",
+                                        TransferKind::Upload => "↑",
+                                    };
+                                    ui.label(format!("{arrow} {}", entry.display_name));
+                                    let (state_str, color) = match &entry.state {
+                                        TransferState::Queued => ("Queued", egui::Color32::GRAY),
+                                        TransferState::Running => {
+                                            ("Running", egui::Color32::LIGHT_BLUE)
+                                        }
+                                        TransferState::Done => ("Done", OK_GREEN),
+                                        TransferState::Cancelled => {
+                                            ("Cancelled", egui::Color32::GOLD)
+                                        }
+                                        TransferState::Failed(_) => ("Failed", ERROR_RED),
+                                    };
+                                    ui.colored_label(color, state_str);
+
+                                    let frac = match entry.total {
+                                        Some(total) if total > 0 => {
+                                            (entry.done as f32 / total as f32).clamp(0.0, 1.0)
+                                        }
+                                        _ => 0.0,
+                                    };
+                                    let bar = egui::ProgressBar::new(frac)
+                                        .show_percentage()
+                                        .desired_width(140.0)
+                                        .animate(matches!(entry.state, TransferState::Running));
+                                    ui.add(bar);
+
+                                    let bytes_str = match entry.total {
+                                        Some(total) => format!(
+                                            "{} / {}",
+                                            format_bytes(entry.done),
+                                            format_bytes(total)
+                                        ),
+                                        None => format_bytes(entry.done),
+                                    };
+                                    if matches!(entry.state, TransferState::Running)
+                                        && entry.speed_bps > 0.0
+                                    {
+                                        ui.label(format!(
+                                            "{bytes_str} · {}",
+                                            format_speed(entry.speed_bps)
+                                        ));
+                                    } else {
+                                        ui.label(bytes_str);
+                                    }
+
+                                    match &entry.state {
+                                        TransferState::Queued | TransferState::Running => {
+                                            if ui.small_button("Cancel").clicked()
+                                                && let Some(tx) = &self.cmd_tx
+                                            {
+                                                let _ = tx.send(Cmd::SftpCancel { id: entry.id });
+                                            }
+                                        }
+                                        TransferState::Cancelled | TransferState::Failed(_) => {
+                                            if ui.small_button("Resume").clicked() {
+                                                to_resume = Some((
+                                                    entry.kind,
+                                                    entry.remote.clone(),
+                                                    entry.local.clone(),
+                                                ));
+                                            }
+                                        }
+                                        TransferState::Done => {}
+                                    }
+                                });
+                            }
+                        });
+                    if let Some((kind, remote, local)) = to_resume {
+                        self.queue_transfer(kind, remote, local, true);
+                    }
                 }
             });
         self.show_sftp = open;
@@ -1731,7 +2111,19 @@ impl GuiApp {
                         if ui.small_button(fwd_label).clicked() {
                             self.show_forwards = !self.show_forwards;
                         }
-                        if ui.small_button("Files (SFTP)").clicked() {
+                        let active_transfers = self
+                            .sftp_transfers
+                            .iter()
+                            .filter(|t| {
+                                matches!(t.state, TransferState::Queued | TransferState::Running)
+                            })
+                            .count();
+                        let sftp_label = if active_transfers > 0 {
+                            format!("Files (SFTP) ({active_transfers})")
+                        } else {
+                            "Files (SFTP)".to_string()
+                        };
+                        if ui.small_button(sftp_label).clicked() {
                             self.show_sftp = !self.show_sftp;
                             if self.show_sftp
                                 && self.sftp_path.is_empty()
@@ -1818,5 +2210,21 @@ mod tests {
         let formatted = format_forward_list(&parsed);
         let reparsed = parse_forward_list(&formatted).unwrap();
         assert_eq!(reparsed, parsed);
+    }
+
+    #[test]
+    fn format_bytes_and_speed_units() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1024), "1.0 KiB");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MiB");
+        assert_eq!(format_bytes(5 * 1024 * 1024 * 1024), "5.0 GiB");
+
+        assert_eq!(format_speed(0.0), "0 B/s");
+        assert_eq!(format_speed(500.0), "500 B/s");
+        assert_eq!(format_speed(1536.0), "1.5 KiB/s");
+        assert_eq!(format_speed(2.5 * 1024.0 * 1024.0), "2.5 MiB/s");
+        assert_eq!(format_speed(1.2 * 1024.0 * 1024.0 * 1024.0), "1.2 GiB/s");
     }
 }
