@@ -11,7 +11,7 @@ use maelstromssh_core::prompt::{KiPrompt, Prompter};
 use maelstromssh_core::ssh::{AcceptAll, Session};
 use russh::MethodKind;
 use russh::keys::PublicKey;
-use russh::server::{self, Auth, Response};
+use russh::server::{self, Auth, PublicKeyOffer, Response, VerifiedPublicKey};
 use tokio::net::TcpListener;
 
 const PASSWORD: &str = "hunter2";
@@ -25,23 +25,33 @@ struct TwoFactorServer {
     authorized: Option<PublicKey>,
 }
 
+impl TwoFactorServer {
+    fn check_key(&self, key: &PublicKey) -> Auth {
+        match &self.authorized {
+            Some(k) if k.key_data() == key.key_data() => Auth::Accept,
+            _ => Auth::reject(),
+        }
+    }
+}
+
 impl server::Handler for TwoFactorServer {
     type Error = russh::Error;
 
     // Like sshd, only acknowledge (PK_OK) keys that are authorized.
     async fn auth_publickey_offered(
         &mut self,
-        user: &str,
-        key: &PublicKey,
+        _user: &str,
+        offer: PublicKeyOffer<'_>,
     ) -> Result<Auth, Self::Error> {
-        self.auth_publickey(user, key).await
+        Ok(self.check_key(offer.public_key))
     }
 
-    async fn auth_publickey(&mut self, _user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
-        Ok(match &self.authorized {
-            Some(k) if k.key_data() == key.key_data() => Auth::Accept,
-            _ => Auth::reject(),
-        })
+    async fn auth_publickey(
+        &mut self,
+        _user: &str,
+        key: VerifiedPublicKey<'_>,
+    ) -> Result<Auth, Self::Error> {
+        Ok(self.check_key(key.public_key))
     }
 
     async fn auth_password(&mut self, _user: &str, password: &str) -> Result<Auth, Self::Error> {
