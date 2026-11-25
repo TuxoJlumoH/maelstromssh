@@ -9,7 +9,7 @@ authors.workspace = true
 
 [dependencies]
 russh = "0.65"
-russh-sftp = "3"
+russh-sftp = "4"
 vte = "0.15"
 unicode-width = "0.2"
 # Pinned to the exact version russh 0.65 vendors, purely to turn on the
