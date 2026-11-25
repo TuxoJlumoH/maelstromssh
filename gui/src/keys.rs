@@ -14,6 +14,8 @@ pub enum KeyOut {
     Ignore,
     /// A local quit shortcut (Ctrl+Shift+Q).
     Quit,
+    /// A local paste shortcut (Ctrl+Shift+V).
+    Paste,
 }
 
 /// Maps a key event to its output. Printable keys with no Ctrl/Alt are
@@ -25,6 +27,9 @@ pub fn encode(key: Key, mods: Modifiers, app_cursor: bool) -> KeyOut {
 
     if ctrl && shift && key == Key::Q {
         return KeyOut::Quit;
+    }
+    if ctrl && shift && key == Key::V {
+        return KeyOut::Paste;
     }
 
     // Ctrl+letter/symbol -> control byte.
@@ -249,6 +254,11 @@ impl KeyOut {
     fn is_quit(&self) -> bool {
         matches!(self, KeyOut::Quit)
     }
+
+    #[cfg(test)]
+    fn is_paste(&self) -> bool {
+        matches!(self, KeyOut::Paste)
+    }
 }
 
 #[cfg(test)]
@@ -274,6 +284,15 @@ mod tests {
         assert_eq!(
             encode(Key::D, m(true, false, false), false).bytes(),
             &[0x04]
+        );
+    }
+
+    #[test]
+    fn paste_shortcut() {
+        assert!(encode(Key::V, m(true, false, true), false).is_paste());
+        assert_eq!(
+            encode(Key::V, m(true, false, false), false).bytes(),
+            &[0x16]
         );
     }
 

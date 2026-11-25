@@ -1466,7 +1466,7 @@ impl GuiApp {
         for evt in events {
             match evt {
                 egui::Event::Text(text) if !kb_captured => self.send_data(text.into_bytes()),
-                // egui's winit layer turns Ctrl+C/Ctrl+X into clipboard
+                // egui's winit layer turns Ctrl+C/Ctrl+X (without Shift) into clipboard
                 // commands and never emits the Key events, so translate them
                 // back into the control bytes a terminal expects.
                 egui::Event::Copy if !kb_captured => self.send_data(vec![0x03]),
@@ -1490,6 +1490,9 @@ impl GuiApp {
                 } if !kb_captured => match keys::encode(key, modifiers, app_cursor) {
                     KeyOut::Bytes(b) => self.send_data(b),
                     KeyOut::Quit => self.quit = true,
+                    KeyOut::Paste => ui
+                        .ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::RequestPaste),
                     KeyOut::Ignore => {}
                 },
                 egui::Event::MouseWheel { delta, .. } if !ptr_captured => {
