@@ -21,13 +21,14 @@
 
 ## Features
 
-- **SSH** — works like OpenSSH out of the box: `ssh-agent`, `~/.ssh` keys, password and keyboard-interactive (2FA), `~/.ssh/config` host aliases, and trust-on-first-use host-key verification.
-- **SFTP** — scriptable `get`/`put`/`ls`/`rm`/`mkdir`/`rename`, an interactive shell, and a drag-and-drop file browser in the web UI.
-- **Port forwarding** — local, remote, and dynamic (SOCKS5 proxy); the web UI adds and stops forwards while connected.
-- **Serial / COM ports** — open `/dev/ttyUSB0`, `/dev/ttyACM0`, `/dev/ttyS0` etc. with any baud rate, data bits, parity, stop bits and flow control, and send a break; in the CLI and the web UI.
+- **SSH** — works like OpenSSH out of the box: `ssh-agent`, `~/.ssh` keys, password and keyboard-interactive (2FA), `~/.ssh/config` host aliases, jump hosts (`-J` / `ProxyJump`), and trust-on-first-use host-key verification.
+- **SFTP** — scriptable `get`/`put`/`ls`/`rm`/`mkdir`/`rename`, an interactive shell, and a file browser in the terminal UI, the desktop window and the web UI (with drag and drop).
+- **Port forwarding** — local, remote, and dynamic (SOCKS5 proxy); the terminal UI, desktop window and web UI add and stop forwards while connected.
+- **Serial / COM ports** — open `/dev/ttyUSB0`, `/dev/ttyACM0`, `/dev/ttyS0` etc. with any baud rate, data bits, parity, stop bits and flow control, and send a break; in every front-end.
 - **Telnet and raw TCP** — for old switches, routers and serial-over-IP adapters: Telnet option negotiation (window size, terminal type, break), or bytes passed through unchanged.
-- **Session logging** — save everything a session prints to a file (`--log` in the CLI, a checkbox in the web UI).
-- **Key generation** — Ed25519 and RSA (configurable size).
+- **Session logging** — save everything a session prints to a file (`--log`, or *Save output* in the desktop window and web UI).
+- **Keys and known hosts** — generate Ed25519 and RSA keys, list your `~/.ssh` keys, and inspect or remove trusted server fingerprints (CLI and web UI).
+- **Snippets** — saved commands you can paste or run with one click in the web UI.
 - **Full terminal emulator** — 256-color + truecolor, scrollback, reflow-on-resize, scroll regions, alternate screen, mouse reporting, bracketed paste.
 - **Profiles** — saved connection settings, including port forwards.
 
@@ -105,10 +106,15 @@ maelstromssh-tui user@host
 maelstromssh-tui --serial /dev/ttyUSB0 -b 115200 --log ~/logs
 maelstromssh-gui                     # opens a connect form (SSH, Serial, Telnet, Raw TCP)
 maelstromssh-gui user@host --log ~/logs
+maelstromssh-tui -L 8080:localhost:80 user@host   # forwards work in both, like the CLI
 ```
 
 The desktop window asks for passwords, passphrases and host-key confirmation
 inside the window, so it also works when started from the app menu.
+
+On SSH connections, `F12` in the terminal UI opens a panel with an SFTP file
+browser and the port forwards (`Tab` switches between them). The desktop
+window has *Files (SFTP)* and *Forwards* buttons in its status bar.
 
 ### Web UI
 
@@ -159,9 +165,9 @@ packaging/              — desktop entry, Arch PKGBUILD
 
 ## Roadmap
 
-- Serial, Telnet, raw TCP and session logging in the terminal UI and desktop window
-  (today they are in the command line and the web UI).
-- SFTP file browser and port forwards in the terminal UI and desktop window.
+- Known-hosts manager and SSH key list in the desktop window.
+- Several sessions in one desktop window (tabs).
+- SFTP transfer queue with progress and resume.
 
 ## Documentation
 

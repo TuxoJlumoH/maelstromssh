@@ -35,7 +35,8 @@ Install and packaging (see the `Makefile`):
 the tag over SSH and needs your GitHub key; it is not suitable for the AUR.
 
 CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, clippy with
-`-D warnings` and the tests on every push to `main` and every pull request.
+`-D warnings`, the tests and `cargo audit` on every push to `main` and every
+pull request.
 Pushing a `v*` tag that matches the `Cargo.toml` version
 (`.github/workflows/release.yml`) publishes a GitHub release with the
 tarball and the `.deb`.
@@ -342,17 +343,27 @@ maelstromssh-tui [TARGET] [OPTIONS]
 | `--telnet` | Connect over Telnet. |
 | `--raw` | Open a raw TCP connection (requires `-p`). |
 | `--log <FILE>` | Save all session output to `FILE` (or a dated file inside a folder). |
+| `-L/-R/-D <SPEC>` | Port forwards, same syntax as `connect` (SSH only, repeatable). |
 
 ```bash
 maelstromssh-tui user@example.com
 maelstromssh-tui --profile mybox
 maelstromssh-tui --serial /dev/ttyUSB0 -b 115200 --log ~/logs
 maelstromssh-tui --telnet 192.168.1.1
+maelstromssh-tui -L 8080:localhost:80 -D 1080 user@example.com
 ```
 
 Controls: type normally; `Ctrl+]` quits; `F12` sends a break on serial and
 Telnet connections; mouse wheel / `Shift+PgUp`/`PgDn` scrolls back; window
 resize resizes the remote PTY (or Telnet NAWS).
+
+On SSH connections `F12` opens the **SSH tools** panel instead (`Tab` switches
+tabs, `Esc`/`F12` closes it):
+
+| Tab | Keys |
+|---|---|
+| Files (SFTP) | `↑/↓` or `j/k` move · `Enter` open · `Backspace` up · `d` download · `u` upload · `m` new folder · `r` rename · `x`/`Del` delete · `g` go to path · `R` refresh |
+| Forwards | `l` add local (`-L`) · `r` add remote (`-R`) · `d` add SOCKS5 (`-D`) · `x`/`Del` stop the selected forward |
 
 ---
 
@@ -382,12 +393,21 @@ buttons. While connected to a serial port or Telnet server, the status bar has
 a **Send break** button. When a connection fails, **Change…** returns to the
 form, prefilled.
 
+On SSH connections the status bar has two more buttons:
+
+- **Files (SFTP)** — browse folders, download, upload to the current folder,
+  rename, delete and create folders.
+- **Forwards** — add `-L`/`-R`/`-D` forwards (same syntax as the CLI) and stop
+  them while connected. `-L/-R/-D` on the command line and a profile's
+  forwards start on connect.
+
 In-window controls:
 
 | Action | How |
 |---|---|
 | Type / run commands | normal typing |
-| Interrupt / EOF / paste | `Ctrl+C` · `Ctrl+D` · `Ctrl+V` |
+| Interrupt / EOF | `Ctrl+C` · `Ctrl+D` |
+| Paste | `Ctrl+V` or `Ctrl+Shift+V` |
 | Scroll back | mouse wheel, or `Shift`+`↑/↓`/`PgUp`/`PgDn` |
 | Quit | `Ctrl+Shift+Q` (or close the window) |
 | Resize remote terminal | resize the window |
@@ -433,6 +453,12 @@ server makes old links invalid, and the page then asks for the new one.
   stop them while connected. A profile's forwards start on connect.
 - **Profiles**: `+` creates one (SSH or serial), the ✎ button edits or
   deletes one. Forwards are entered one per line, e.g. `-L 8080:localhost:80`.
+- **Snippets**: saved commands in the sidebar (`~/.config/maelstromssh/snippets.toml`).
+  Clicking one pastes it into the active terminal, or runs it if *Run
+  immediately* is ticked.
+- **SSH keys** and **Known hosts** (sidebar footer): list the public keys in
+  `~/.ssh`, generate a new Ed25519 or RSA keypair, and view or remove trusted
+  server fingerprints.
 
 Security: every request must carry the token and name this server in `Host`
 (blocks DNS rebinding); WebSockets and changes must come from the app's
