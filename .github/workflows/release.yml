@@ -46,7 +46,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # This version's CHANGELOG.md section, above GitHub's generated notes.
+          awk -v v="## ${GITHUB_REF_NAME#v} " 'index($0, v) == 1 {on = 1; next} /^## / {on = 0} on' \
+            CHANGELOG.md > notes.md
           gh release create "$GITHUB_REF_NAME" \
             --title "MaelstromSSH $GITHUB_REF_NAME" \
+            --notes-file notes.md \
             --generate-notes \
             dist/*.tar.gz dist/*.tar.gz.sha256 dist/*.deb dist/*.deb.sha256

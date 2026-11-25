@@ -171,7 +171,8 @@ packaging/              — desktop entry, Arch PKGBUILD
 
 ## Documentation
 
-Full usage and API reference: [`HELP.md`](HELP.md).
+Full usage and API reference: [`HELP.md`](HELP.md). Release notes:
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 

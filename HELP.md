@@ -44,7 +44,8 @@ tarball and the `.deb`.
 Releasing:
 
 1. Bump `version` in the root `Cargo.toml`, run `cargo build` to update
-   `Cargo.lock`, and commit.
+   `Cargo.lock`, add a `## X.Y.Z — date` section to `CHANGELOG.md` (it
+   becomes the release notes), and commit.
 2. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
 3. Update `pkgver` in `packaging/aur/PKGBUILD`, then run
    `makepkg --printsrcinfo > .SRCINFO`.
